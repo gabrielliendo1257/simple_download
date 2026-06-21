@@ -1,0 +1,17 @@
+{
+    "typeCheckingMode": "basic",
+
+    "reportMissingImports": "error",
+
+    "reportAbstractUsage": "error",
+    "reportMissingParameterType": "warning",
+
+    "reportAttributeAccessIssue": "error",
+    "reportCallIssue": "error",
+    "reportArgumentType": "error",
+
+    "reportReturnType": "error",
+    "reportGeneralTypeIssues": "error",
+
+    "reportUninitializedInstanceVariable": "error"
+}
