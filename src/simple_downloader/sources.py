@@ -1,13 +1,17 @@
+from ast import arg
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, override
 
 from simple_downloader.errors import ProcessError, SourceUnvaliableError
-from simple_downloader.executor import (Executable, ExecutableName,
-                                        ExecutableStatus, ExecutorRegistry)
-from simple_downloader.process import (ProcessExecutor, ProcessRequest,
-                                       RunningProcess)
+from simple_downloader.executor import (
+    Executable,
+    ExecutableName,
+    ExecutableStatus,
+    ExecutorRegistry,
+)
+from simple_downloader.process import ProcessExecutor, ProcessRequest, RunningProcess
 
 
 @dataclass(frozen=True)
@@ -30,8 +34,12 @@ class SourceProvider:
         executable: Executable = self.executor_registry.get_executor(
             executable_name=executable_name
         )
+        print("Executable: ", executable)
 
-        if executable.status == ExecutableStatus.NOT_FOUND:
+        if (
+            executable.status == ExecutableStatus.NOT_FOUND
+            or executable.status == ExecutableStatus.ERROR
+        ):
             raise SourceUnvaliableError(executable_name.value)
 
         if executable_name == ExecutableName.YT_DLP:
@@ -48,7 +56,14 @@ class Source(Protocol):
 
     async def formats(self, url: str) -> dict: ...
 
-    async def download(self) -> RunningProcess: ...
+    async def download(
+        self,
+        url: str,
+        extract_audio: bool = False,
+        output: Path | None = None,
+        format_id: str | None = None,
+        resume: bool = False,
+    ) -> RunningProcess: ...
 
 
 class YtDlpSource(Source):
@@ -58,17 +73,16 @@ class YtDlpSource(Source):
         self._executor = executor
 
     async def metadata(self, url: str) -> VideoMetadata:
-        request = ProcessRequest(
-            executable=self._executable.path,
-            args=["--dump-single-json", "--no-playlist", url],
-        )
+        args = ["--dump-single-json", "--no-playlist"]
+        args.append(url)
+
+        request = ProcessRequest(executable=self._executable.path, args=args)
 
         result = await self._executor.execute(request=request)
         if result.exit_code != 0:
             raise ProcessError(result.stderr)
 
         data = json.loads(result.stdout)
-        print("Data: ", data)
 
         return VideoMetadata(
             id=data["id"],
@@ -89,28 +103,49 @@ class YtDlpSource(Source):
             raise ProcessError(result.stderr)
 
         data = json.loads(result.stdout)
-        print("Data: ", data)
 
         return data["formats"]
 
+    @override
     async def download(
-        self, url: str, output: Path | None = None, format_id: str | None = None
+        self,
+        url: str,
+        extract_audio: bool = False,
+        output: Path | None = None,
+        format_id: str | None = None,
+        resume: bool = False,
     ) -> RunningProcess:
-        args = [
-                "--newline"
-                ]
+        args = ["--newline"]
+        args.extend(
+            [
+                "--progress-template",
+                # "PROGRESS=%(progress)j",
+                'PROGRESS={"downloaded":"%(progress.downloaded_bytes)s","total":"%(progress.total_bytes)s","speed":"%(progress.speed)s"}',
+            ]
+        )
 
-        args.extend(["--progress-template", 'PROGRESS={"downloaded":"%(progress.downloaded_bytes)s","total":"%(progress.total_bytes)s","speed":"%(progress.speed)s"}'])
+        if resume:
+            args.append("-c")
+        else:
+            if extract_audio:
+                args.extend(["-x", "--audio-format", "best", "--no-keep-video"])
+            elif format_id is not None:
+                args.extend(["-f", format_id])
+            else:
+                # args.extend(["-f", "best[height==720]"])
+                args.extend(
+                    ["-f", "bestvideo[height<=720]+bestaudio/best[height<=720]"]
+                )
 
         if output is not None:
             args.extend(["-o", str(output)])
 
-        if format_id is not None:
-            args.extend(["-f", format_id])
-
         args.append(url)
+        print("args: ", args)
+        assert self._executable.path is not None, "Path of executable is None"
 
-        request = ProcessRequest(executable=self._executable.path, args=args)
+        request: ProcessRequest = ProcessRequest(
+            executable=self._executable.path, args=args
+        )
 
         return await self._executor.start(request=request)
-

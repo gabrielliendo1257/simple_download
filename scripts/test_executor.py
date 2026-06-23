@@ -1,5 +1,4 @@
 import asyncio
-import json
 
 from simple_downloader.executor import (
     ExecutableName,
@@ -30,24 +29,17 @@ async def test_executor():
         executor_register.register(executable=result_spec)
 
     source = source_provider.get_source(executable_name=ExecutableName.YT_DLP)
-    metadata = await source.metadata("https://youtu.be/VwNPDISsjbU?si=X7fqRX5pd_E6VzAv")
-    formats = await source.formats(
-        url="https://youtu.be/_nXPqePbBac?si=ePJVOTX1Selq-E2D"
-    )
+    # metadata = await source.metadata("https://youtu.be/VwNPDISsjbU?si=X7fqRX5pd_E6VzAv")
+    # formats = await source.formats(
+    #     url="https://youtu.be/_nXPqePbBac?si=ePJVOTX1Selq-E2D"
+    # )
     runner = await source.download(
-        url="https://youtu.be/_nXPqePbBac?si=ePJVOTX1Selq-E2D"
+        url="https://youtu.be/leOpsVpDjao?si=5aBYlD8B0wBu0Hjk", extract_audio=True
     )
-    print("Metadata: ", metadata)
-    print("Formats: ", formats)
-    async for line in runner.stdout_lines():
-        if "[download]" in line:
-            print(line)
-        elif line.startswith("PROGRESS="):
-            try:
-                progress = DownloadProgress(**json.loads(line[9:]))
-                print(progress)
-            except json.JSONDecodeError:
-                continue
+    # print("Metadata: ", metadata)
+    # print("Formats: ", formats)
+    async for line in runner.progress():
+        print("Line: ", line)
 
 
 asyncio.run(test_executor())

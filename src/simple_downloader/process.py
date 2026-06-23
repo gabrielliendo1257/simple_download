@@ -1,9 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, Protocol
+
+from simple_downloader.event import EventType
+
+
+@dataclass(frozen=True)
+class DownloadProgressEvent(EventType):
+    id: UUID
+    progress: DownloadProgress
 
 
 @dataclass(frozen=True)
@@ -13,7 +22,7 @@ class ProcessRequest:
     cwd: Path | None = None
     env: Mapping[str, str] | None = None
     stdin: bytes | None = None
-    timeout: float = 5.0
+    timeout: float = 9.0
 
 
 @dataclass(frozen=True)
@@ -63,6 +72,16 @@ class RunningProcess:
 
         while line := await self.process.stderr.readline():
             yield line.decode(errors="replace").rstrip()
+
+    async def progress(self):
+        async for line in self.stdout_lines():
+            if "[download]" in line:
+                print(line)
+            elif line.startswith("PROGRESS="):
+                try:
+                    yield DownloadProgress(**json.loads(line[9:]))
+                except json.JSONDecodeError:
+                    continue
 
 
 class ProcessExecutor(Protocol):

@@ -1,3 +1,6 @@
+from uuid import UUID
+
+
 class SourceUnvaliableError(Exception):
     executable_name: str
 
@@ -10,3 +13,10 @@ class ProcessError(Exception):
     def __init__(self, stderr: str, *args: object) -> None:
         super().__init__(*args)
         self.stderr = stderr
+
+class JobNotFoundError(Exception):
+    job_id: UUID
+
+    def __init__(self, job_id: UUID, *args: object) -> None:
+        super().__init__(*args)
+        self.job_id = job_id
