@@ -23,6 +23,7 @@ class HlsTask:
     fetcher: SegmentFetcher
     segments: Sequence[Segment]
     max_parallel: int = 6
+    init_uri: str | None = None
 
     def __post_init__(self) -> None:
         self._started = False
@@ -75,6 +76,9 @@ class HlsTask:
 
         with open(self.out_file, "wb") as handle:
             try:
+                if self.init_uri is not None:
+                    handle.write(await self.fetcher.fetch_init(self.init_uri))
+
                 while expected < len(segments):
                     index, data = await self._sink.get()
                     if data is None:

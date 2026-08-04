@@ -123,3 +123,15 @@ class SegmentFetcher:
         key = await self._keys.get(segment.key.uri)
         iv = segment.key.iv or segment.index.to_bytes(16, "big")
         return aes_128_cbc_decrypt(ts, key, iv)
+
+    async def fetch_init(self, uri: str) -> bytes:
+        """Descarga el segmento de inicialización (#EXT-X-MAP).
+
+        El init (ftyp+moov) debe anteponerse a los fragmentos .m4s
+        para obtener un MP4 válido.
+        """
+        raw = await self._http.get(uri)
+        try:
+            return unwrap_ts(raw)
+        except ValueError:
+            return raw

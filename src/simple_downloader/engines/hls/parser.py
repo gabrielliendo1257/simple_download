@@ -37,6 +37,7 @@ def parse_media_playlist(
 ) -> HlsPlaylist:
     target_duration = re.search(r"#EXT-X-TARGETDURATION:([0-9.]+)", text)
     is_live = "#EXT-X-ENDLIST" not in text
+    init_map = re.search(r'#EXT-X-MAP:URI="([^"]+)"', text)
 
     segments: list[Segment] = []
     current_key: AesKey | None = None
@@ -57,7 +58,7 @@ def parse_media_playlist(
                 uri=urljoin(playlist_url, uri.group(1)),
                 iv=bytes.fromhex(iv.group(1)) if iv else None,
             )
-        elif line.startswith("#"):
+        elif line.startswith("#EXT-X-MAP") or line.startswith("#"):
             continue
         elif line:
             segments.append(
@@ -74,4 +75,5 @@ def parse_media_playlist(
         target_duration=float(target_duration.group(1)) if target_duration else 0.0,
         is_live=is_live,
         resolution=resolution,
+        init_uri=urljoin(playlist_url, init_map.group(1)) if init_map else None,
     )

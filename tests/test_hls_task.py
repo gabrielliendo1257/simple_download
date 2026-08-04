@@ -43,6 +43,33 @@ async def test_hls_task_writes_all_segments_in_order(tmp_path) -> None:
     assert out.read_bytes() == payload * 4
 
 
+async def test_hls_task_writes_init_map_before_segments(tmp_path) -> None:
+    init = b"\x00\x00\x00\x18ftypisom"  # ftyp + moov de ejemplo
+    seg = b"moof\x00\x00\x00\x10mfhd"  # fragmentos m4s
+
+    class Fmp4Fetcher:
+        async def fetch_init(self, uri: str) -> bytes:
+            assert uri == "https://s/init.mp4"
+            return init
+
+        async def fetch(self, segment: Segment) -> bytes:
+            return seg
+
+    out = tmp_path / "out.mp4"
+    task = HlsTask(
+        out_file=out,
+        fetcher=Fmp4Fetcher(),
+        segments=_segments(3),
+        init_uri="https://s/init.mp4",
+    )
+
+    await task.progress().__aiter__().__anext__()
+    result = await task.finalize()
+
+    assert result.exit_code == 0
+    assert out.read_bytes() == init + seg * 3
+
+
 async def test_hls_task_writes_out_of_order_chunks_ordered(tmp_path) -> None:
     async def slow_first(segment: Segment) -> bytes:
         if segment.index == 0:

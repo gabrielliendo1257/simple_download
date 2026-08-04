@@ -88,3 +88,25 @@ def test_parse_media_playlist_ignores_comment_lines() -> None:
     )
 
     assert len(playlist.segments) == 1
+
+
+def test_parse_media_playlist_extracts_init_map() -> None:
+    fmp4 = """#EXTM3U
+#EXT-X-MAP:URI="init-v1-a1.mp4"
+#EXTINF:4.0,
+seg-1-v1-a1.m4s
+#EXTINF:4.0,
+seg-2-v1-a1.m4s
+#EXT-X-ENDLIST
+"""
+    playlist = parse_media_playlist("https://cdn.example.com/1080/index.m3u8", fmp4)
+
+    assert playlist.init_uri == "https://cdn.example.com/1080/init-v1-a1.mp4"
+    assert len(playlist.segments) == 2
+    assert playlist.segments[0].uri.endswith("seg-1-v1-a1.m4s")
+
+
+def test_parse_media_playlist_without_init_map() -> None:
+    playlist = parse_media_playlist("https://cdn.example.com/1080/video.m3u8", MEDIA)
+
+    assert playlist.init_uri is None

@@ -33,3 +33,4 @@ class HlsPlaylist:
     target_duration: float = 0.0
     is_live: bool = False
     resolution: str | None = None
+    init_uri: str | None = None

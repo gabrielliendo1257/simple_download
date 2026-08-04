@@ -40,6 +40,7 @@ class HlsEngine(Engine):
             fetcher=SegmentFetcher(http),
             segments=playlist.segments,
             max_parallel=max_parallel,
+            init_uri=playlist.init_uri,
         )
 
     async def _resolve_playlist(self, url: str, http: HttpClient) -> HlsPlaylist:
