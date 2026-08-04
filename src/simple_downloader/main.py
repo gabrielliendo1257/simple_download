@@ -1,5 +1,6 @@
-from simple_downloader.runner import Runner
+from simple_downloader.ui.app import DownloadApp
 
 
-def main():
-    Runner()
+def main() -> None:
+    app = DownloadApp()
+    app.run()

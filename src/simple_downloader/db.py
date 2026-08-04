@@ -1,29 +1,19 @@
 from typing import Protocol
 from uuid import UUID
 
-from simple_downloader.app.manager import DownloadJob
-
-
-class DownloadJobRepository(Protocol):
-    async def save(
-        self,
-        job: DownloadJob,
-    ): ...
-
-    async def find(
-        self,
-        id: UUID,
-    ) -> DownloadJob: ...
-
-    async def list(self) -> list[DownloadJob]: ...
+from simple_downloader.domain.models import DownloadJob
+from simple_downloader.domain.protocols import DownloadJobRepository
 
 
 class InMemoryRepository(DownloadJobRepository):
-    async def save(self, job: DownloadJob):
-        return await super().save(job)
+    def __init__(self) -> None:
+        self._jobs: dict[UUID, DownloadJob] = {}
 
-    async def find(self, id: UUID) -> DownloadJob:
-        return await super().find(id)
+    async def save(self, job: DownloadJob) -> None:
+        self._jobs[job.id] = job
+
+    async def find(self, id: UUID) -> DownloadJob | None:
+        return self._jobs.get(id)
 
     async def list(self) -> list[DownloadJob]:
-        return await super().list()
+        return list(self._jobs.values())

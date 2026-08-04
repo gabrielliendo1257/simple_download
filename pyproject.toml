@@ -4,7 +4,15 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "aiohttp>=3.14.3",
+    "pycryptodome>=3.23.0",
+    "rich>=15.0.0",
+    "textual>=8.2.7",
+]
+
+[project.scripts]
+simple-downloader = "simple_downloader.main:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -20,6 +28,8 @@ packages = ["src/simple_downloader"]
 markers = [
     "serial",  # used to indicate tests must not run in parallel
 ]
+asyncio_mode = "auto"
+testpaths = ["tests"]
 
 [tool.coverage.run]
 relative_files = true
@@ -28,4 +38,5 @@ relative_files = true
 dev = [
     "pytest (==9.0.2)",
     "black (==26.3.1)",
+    "pytest-asyncio>=1.4.0",
 ]

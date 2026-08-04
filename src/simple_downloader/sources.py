@@ -1,9 +1,11 @@
-from ast import arg
+from __future__ import annotations
+
 import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, override
 
+from simple_downloader.domain.models import DownloadOutput
 from simple_downloader.errors import ProcessError, SourceUnvaliableError
 from simple_downloader.executor import (
     Executable,
@@ -23,6 +25,14 @@ class VideoMetadata:
     webpage_url: str
 
 
+@dataclass(frozen=True)
+class Format:
+    format_id: str
+    ext: str
+    resolution: str
+    filesize_approx: int | None = None
+
+
 class SourceProvider:
     def __init__(
         self, executor_registry: ExecutorRegistry, process_executor: ProcessExecutor
@@ -34,7 +44,6 @@ class SourceProvider:
         executable: Executable = self.executor_registry.get_executor(
             executable_name=executable_name
         )
-        print("Executable: ", executable)
 
         if (
             executable.status == ExecutableStatus.NOT_FOUND
@@ -60,7 +69,7 @@ class Source(Protocol):
         self,
         url: str,
         extract_audio: bool = False,
-        output: Path | None = None,
+        output: Path | str | None = None,
         format_id: str | None = None,
         resume: bool = False,
     ) -> RunningProcess: ...
@@ -92,7 +101,7 @@ class YtDlpSource(Source):
             duration=data["duration"],
         )
 
-    async def formats(self, url: str) -> dict:
+    async def formats(self, url: str) -> list[Format]:
         request = ProcessRequest(
             executable=self._executable.path,
             args=["--dump-single-json", "--no-playlist", url],
@@ -104,14 +113,25 @@ class YtDlpSource(Source):
 
         data = json.loads(result.stdout)
 
-        return data["formats"]
+        formats: list[Format] = []
+        formats_from_source: list[dict] = data["formats"]
+        for fmt in formats_from_source:
+            formats.append(
+                Format(
+                    fmt["format_id"],
+                    fmt["ext"],
+                    fmt["resolution"],
+                    fmt.get("filesize_approx"),
+                )
+            )
+        return formats
 
     @override
     async def download(
         self,
         url: str,
         extract_audio: bool = False,
-        output: Path | None = None,
+        output: Path | str | None = None,
         format_id: str | None = None,
         resume: bool = False,
     ) -> RunningProcess:
@@ -132,16 +152,18 @@ class YtDlpSource(Source):
             elif format_id is not None:
                 args.extend(["-f", format_id])
             else:
-                # args.extend(["-f", "best[height==720]"])
+                # fallback hasta "best" para URLs directas (extractor generic)
                 args.extend(
-                    ["-f", "bestvideo[height<=720]+bestaudio/best[height<=720]"]
+                    [
+                        "-f",
+                        "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
+                    ]
                 )
 
         if output is not None:
-            args.extend(["-o", str(output)])
+            args.extend(["-o", _output_arg(output)])
 
         args.append(url)
-        print("args: ", args)
         assert self._executable.path is not None, "Path of executable is None"
 
         request: ProcessRequest = ProcessRequest(
@@ -149,3 +171,32 @@ class YtDlpSource(Source):
         )
 
         return await self._executor.start(request=request)
+
+
+def _output_arg(output: Path | str | DownloadOutput | None) -> str | None:
+    """Convierte la salida en el `-o` de yt-dlp.
+
+    `DownloadOutput` con template usa placeholders tipo `{title}` que se
+    traducen a la sintaxis de yt-dlp (`%(title)s`).
+    """
+    if output is None:
+        return None
+    if not isinstance(output, DownloadOutput):
+        return str(output)
+
+    if output.create_directories:
+        output.directory.mkdir(parents=True, exist_ok=True)
+
+    if output.filename:
+        return str(output.directory / output.filename)
+    if output.template:
+        return str(output.directory / _translate_template(output.template))
+    return str(output.directory)
+
+
+def _translate_template(template: str) -> str:
+    placeholders = {"title", "ext", "id", "date", "resolution"}
+    translated = template
+    for key in placeholders:
+        translated = translated.replace("{" + key + "}", "%(" + key + ")s")
+    return translated

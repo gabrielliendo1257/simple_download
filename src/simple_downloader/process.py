@@ -4,7 +4,7 @@ import asyncio
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Mapping, Protocol
+from typing import AsyncGenerator, Mapping, Protocol
 
 from simple_downloader.event import EventType
 
@@ -56,10 +56,12 @@ class RunningProcess:
         )
 
     async def terminate(self):
-        self.process.terminate()
+        if self.process.returncode is None:
+            self.process.terminate()
 
     async def kill(self):
-        self.process.kill()
+        if self.process.returncode is None:
+            self.process.kill()
 
     async def stdout_lines(self):
         assert self.process.stdout is not None
@@ -73,7 +75,7 @@ class RunningProcess:
         while line := await self.process.stderr.readline():
             yield line.decode(errors="replace").rstrip()
 
-    async def progress(self):
+    async def progress(self) -> AsyncGenerator[DownloadProgress]:
         async for line in self.stdout_lines():
             if "[download]" in line:
                 print(line)
@@ -91,7 +93,7 @@ class ProcessExecutor(Protocol):
 
 
 class AsyncProcessExecutor(ProcessExecutor):
-    async def execute(self, request: ProcessRequest):
+    async def execute(self, request: ProcessRequest) -> ProcessResult:
         running_process = await self.start(request=request)
 
         return await running_process.wait()

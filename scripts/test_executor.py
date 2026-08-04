@@ -6,7 +6,7 @@ from simple_downloader.executor import (
     ExecutorDetector,
     ExecutorRegistry,
 )
-from simple_downloader.process import AsyncProcessExecutor, DownloadProgress
+from simple_downloader.process import AsyncProcessExecutor
 from simple_downloader.sources import SourceProvider
 
 
@@ -30,16 +30,20 @@ async def test_executor():
 
     source = source_provider.get_source(executable_name=ExecutableName.YT_DLP)
     # metadata = await source.metadata("https://youtu.be/VwNPDISsjbU?si=X7fqRX5pd_E6VzAv")
-    # formats = await source.formats(
-    #     url="https://youtu.be/_nXPqePbBac?si=ePJVOTX1Selq-E2D"
-    # )
-    runner = await source.download(
-        url="https://youtu.be/leOpsVpDjao?si=5aBYlD8B0wBu0Hjk", extract_audio=True
+    formats = await source.formats(
+        url="https://youtu.be/wr8WS1JyqQs?si=xe1fAYmGZJde7azv"
     )
+    # runner = await source.download(
+    #     url="https://youtu.be/leOpsVpDjao?si=5aBYlD8B0wBu0Hjk", extract_audio=True
+    # )
     # print("Metadata: ", metadata)
-    # print("Formats: ", formats)
-    async for line in runner.progress():
-        print("Line: ", line)
+    for fmt in formats:
+        print(fmt)
+        # elif fmt.get("vcodec") != 'none':
+        #     print("Video: ", end="")
+        #     print(fmt["format_id"], fmt.get("ext"), fmt.get("filesize_approx"), fmt["acodec"], fmt["vcodec"])
+    # async for line in runner.progress():
+    #     print("Line: ", line)
 
 
 asyncio.run(test_executor())
