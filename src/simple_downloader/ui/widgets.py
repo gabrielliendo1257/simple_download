@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
@@ -9,7 +11,7 @@ from textual.binding import Binding
 from textual.containers import Container
 from textual.reactive import reactive
 from textual.screen import ModalScreen
-from textual.widgets import Input, Label, ListItem, Static
+from textual.widgets import Button, Input, Label, ListItem, Static
 
 from simple_downloader.domain.models import DownloadOutput
 
@@ -318,15 +320,66 @@ class ConfirmModal(ModalScreen[bool]):
             yield Static("[y] Sí    [n] No    [esc] Cancelar", id="modal-hint")
 
 
-class AddDownloadModal(ModalScreen[DownloadOutput | None]):
-    """Añade una descarga: nombre y carpeta editables por descarga.
+_CURL_H_HEADER = re.compile(r"""-H\s+(?:"([^"]*)"|'([^']*)'|([^\s]+))""")
+_CURL_HEADER_FLAGS = frozenset({"-H", "--header"})
+
+
+def parse_headers(text: str) -> dict[str, str]:
+    """Convierte el campo de headers en dict normalizado a minúsculas.
+
+    Acepta `Clave: Valor` por línea y bloques curl como
+    `curl -H 'Accept-Language: en-US,en' -H "User-Agent: Firefox"`.
+    Las líneas que no contienen `:` ni flags curl se ignoran.
+    """
+    headers: dict[str, str] = {}
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if "-H" in stripped or "--header" in stripped:
+            for match in _CURL_H_HEADER.finditer(stripped):
+                raw = match.group(1) or match.group(2) or match.group(3)
+                _add_header(headers, raw)
+        else:
+            _add_header(headers, stripped)
+    return headers
+
+
+def _add_header(headers: dict[str, str], raw: str) -> None:
+    key, sep, value = raw.partition(":")
+    if sep and key.strip():
+        headers[key.strip().lower()] = value.strip()
+
+
+def _pairs_to_headers(pairs: Iterable[tuple[str, str]]) -> dict[str, str]:
+    """Convierte pares (clave, valor) de las filas del modal en headers.
+
+    Claves normalizadas a minúsculas; pares vacíos ignorados.
+    """
+    headers: dict[str, str] = {}
+    for key, value in pairs:
+        normalized = key.strip().lower()
+        if normalized and value.strip():
+            headers[normalized] = value.strip()
+    return headers
+
+
+@dataclass
+class AddDownloadResult:
+    output: DownloadOutput | None
+    headers: dict[str, str] | None
+
+
+class AddDownloadModal(ModalScreen[AddDownloadResult | None]):
+    """Añade una descarga: nombre, carpeta y headers editables por descarga.
 
     Los valores iniciales vienen de la config de usuario; el resultado
-    es un `DownloadOutput` (o `None` si se cancela).
+    es un `AddDownloadResult` (o `None` si se cancela).
     """
 
     BINDINGS = [
         Binding("escape", "cancel", "Cancelar"),
+        Binding("ctrl+enter", "confirm", "Añadir"),
     ]
 
     def __init__(
@@ -340,6 +393,7 @@ class AddDownloadModal(ModalScreen[DownloadOutput | None]):
         self._url = url
         self._default_name = default_name
         self._default_directory = directory
+        self._row_count = 1  # la fila 0 se crea en compose
 
     def compose(self) -> ComposeResult:
         with Container(id="add-card"):
@@ -360,12 +414,18 @@ class AddDownloadModal(ModalScreen[DownloadOutput | None]):
                 placeholder="Carpeta de destino",
                 id="add-folder",
             )
-            yield Static(
-                "[Enter] Añadir    [Tab] siguiente campo    [esc] Cancelar",
-                id="modal-hint",
-            )
+            yield Label("Headers (opcional)", classes="field-label")
+            with Container(id="headers-fields"):
+                yield self._make_header_row(0)
+            with Container(id="add-actions"):
+                yield Button("Añadir", id="add-submit")
+                yield Button("Cancelar", id="add-cancel")
 
     def on_mount(self) -> None:
+        # Cursor fijo sin parpadeo: en tmux el blink de Textual no
+        # refresca bien y el cursor parece inexistente.
+        for field in self.query(Input):
+            field.cursor_blink = False
         self.query_one("#add-name", Input).focus()
 
     def apply_external_title(self, title: str) -> None:
@@ -375,22 +435,104 @@ class AddDownloadModal(ModalScreen[DownloadOutput | None]):
             name.value = title
             self._default_name = title
 
+    async def on_input_changed(self, event: Input.Changed) -> None:
+        """Si la última fila de headers tiene contenido, crea la siguiente."""
+        if self._row_index(event.input.id) is None:
+            return
+        if self._last_row_has_text():
+            await self._add_header_row()
+
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         event.stop()
         if event.input.id == "add-name":
             self.query_one("#add-folder", Input).focus()
-        else:
+            return
+        if event.input.id == "add-folder":
+            self.query_one("#header-key-0", Input).focus()
+            return
+        index = self._row_index(event.input.id)
+        if index is None:
+            return
+        if self._row_has_text(index):
+            # Fila con contenido: avanzar (key -> value -> siguiente fila).
+            if event.input.id.startswith("header-key"):
+                self.query_one(f"#header-value-{index}", Input).focus()
+                return
+            next_index = index + 1
+            if next_index >= self._row_count:
+                await self._add_header_row()
+            self.query_one(f"#header-key-{next_index}", Input).focus()
+            return
+        # Fila vacía: confirmar. Ojo: en tmux/la mayoría de terminales
+        # Ctrl+Enter llega como Enter, así que Enter es la vía fiable.
+        self._confirm()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "add-submit":
             self._confirm()
+        elif event.button.id == "add-cancel":
+            self.dismiss(None)
 
     def action_cancel(self) -> None:
         self.dismiss(None)
 
+    def action_confirm(self) -> None:
+        self._confirm()
+
+    def _make_header_row(self, index: int) -> Container:
+        return Container(
+            Input(
+                placeholder="Clave",
+                id=f"header-key-{index}",
+                classes="header-field header-key",
+            ),
+            Input(
+                placeholder="Valor",
+                id=f"header-value-{index}",
+                classes="header-field header-value",
+            ),
+            classes="header-row",
+        )
+
+    async def _add_header_row(self) -> None:
+        index = self._row_count
+        self._row_count += 1
+        fields = self.query_one("#headers-fields")
+        await fields.mount(self._make_header_row(index))
+
+    def _row_index(self, widget_id: str) -> int | None:
+        for prefix in ("header-key-", "header-value-"):
+            if widget_id.startswith(prefix):
+                suffix = widget_id[len(prefix) :]
+                return int(suffix) if suffix.isdigit() else None
+        return None
+
+    def _last_row_has_text(self) -> bool:
+        return self._row_has_text(self._row_count - 1)
+
+    def _row_has_text(self, index: int) -> bool:
+        key = self.query_one(f"#header-key-{index}", Input).value.strip()
+        value = self.query_one(f"#header-value-{index}", Input).value.strip()
+        return bool(key or value)
+
+    def _collect_headers(self) -> dict[str, str]:
+        pairs: list[tuple[str, str]] = []
+        for index in range(self._row_count):
+            key = self.query_one(f"#header-key-{index}", Input).value
+            value = self.query_one(f"#header-value-{index}", Input).value
+            pairs.append((key, value))
+        return _pairs_to_headers(pairs)
+
     def _confirm(self) -> None:
         name = self.query_one("#add-name", Input).value.strip()
         folder = self.query_one("#add-folder", Input).value.strip()
+        headers = self._collect_headers()
         self.dismiss(
-            DownloadOutput(
-                directory=Path(folder or self._default_directory).expanduser(),
-                filename=name or None,
+            AddDownloadResult(
+                output=DownloadOutput(
+                    directory=Path(folder or self._default_directory).expanduser(),
+                    filename=name or None,
+                ),
+                headers=headers or None,
             )
         )
