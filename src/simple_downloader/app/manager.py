@@ -11,6 +11,7 @@ from simple_downloader.domain.state import can_transition
 from simple_downloader.engines import EngineRegistry
 from simple_downloader.errors import JobNotFoundError
 from simple_downloader.event import EventBus
+from simple_downloader.infra.http import describe_http_error
 
 
 class DownloadManager:
@@ -52,8 +53,9 @@ class DownloadManager:
         job_id: UUID,
     ) -> None:
         job = self._require_job(job_id)
-        job.task, job.engine = await self._create_task(job.request)
-        await self._scheduler.submit(job=job)
+        if not can_transition(job.state, DownloadState.RUNNING):
+            return
+        await self._start_task(job)
 
     async def rename(
         self,
@@ -88,9 +90,8 @@ class DownloadManager:
         if not can_transition(job.state, DownloadState.RUNNING):
             return
 
-        request = replace(job.request, resume=True)
-        job.task, job.engine = await self._create_task(request)
-        await self._scheduler.submit(job=job)
+        job.request = replace(job.request, resume=True)
+        await self._start_task(job)
 
     async def cancel(
         self,
@@ -105,6 +106,24 @@ class DownloadManager:
             await self._event_bus.publish(
                 event=DownloadStateChangedEvent(job_id=job.id, state=job.state)
             )
+
+    async def _start_task(self, job: DownloadJob) -> None:
+        """Crea la tarea del job. Los fallos de creación (p. ej. GET de la
+        playlist HLS con 403 o sin conexión) se convierten en estado FAILED
+        con mensaje legible en lugar de propagarse a la UI."""
+        try:
+            job.task, job.engine = await self._create_task(job.request)
+        except Exception as exc:
+            if can_transition(job.state, DownloadState.FAILED):
+                job.state = DownloadState.FAILED
+                job.error = (
+                    describe_http_error(exc) or str(exc) or exc.__class__.__name__
+                )
+                await self._event_bus.publish(
+                    event=DownloadStateChangedEvent(job_id=job.id, state=job.state)
+                )
+            return
+        await self._scheduler.submit(job=job)
 
     async def _create_task(self, request: DownloadRequest) -> tuple[DownloadTask, str]:
         engine = self._engines.engine_for(request.url)

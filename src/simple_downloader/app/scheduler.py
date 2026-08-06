@@ -12,6 +12,7 @@ from simple_downloader.domain.models import (
 )
 from simple_downloader.domain.state import can_transition
 from simple_downloader.event import EventBus
+from simple_downloader.infra.http import describe_http_error
 
 _STOP = object()
 
@@ -81,7 +82,9 @@ class DownloadScheduler:
         except Exception as exc:
             if can_transition(job.state, DownloadState.FAILED):
                 job.state = DownloadState.FAILED
-                job.error = str(exc) or exc.__class__.__name__
+                job.error = (
+                    describe_http_error(exc) or str(exc) or exc.__class__.__name__
+                )
                 await self._event_bus.publish(_state_event(job))
 
 

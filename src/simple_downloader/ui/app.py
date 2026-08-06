@@ -316,28 +316,34 @@ class DownloadApp(App[None]):
 
     async def _add_job(self, url: str, output: DownloadOutput | None = None) -> None:
         assert self._manager is not None
-        title = (
-            output.filename
-            if output is not None and output.filename
-            else _title_from_url(url)
-        )
-        job = await self._manager.enqueue(
-            request=DownloadRequest(
-                url=url,
-                title=title,
-                output=output,
+        try:
+            title = (
+                output.filename
+                if output is not None and output.filename
+                else _title_from_url(url)
             )
-        )
-        self._jobs[str(job.id)] = job
+            job = await self._manager.enqueue(
+                request=DownloadRequest(
+                    url=url,
+                    title=title,
+                    output=output,
+                )
+            )
+            self._jobs[str(job.id)] = job
 
-        item = DownloadItem(self._to_ui(job), id=f"job-{job.id}")
-        self._items[str(job.id)] = item
-        list_view = self.query_one("#download-list", ListView)
-        await list_view.append(item)
-        if list_view.index is None:
-            list_view.index = 0
+            item = DownloadItem(self._to_ui(job), id=f"job-{job.id}")
+            self._items[str(job.id)] = item
+            list_view = self.query_one("#download-list", ListView)
+            await list_view.append(item)
+            if list_view.index is None:
+                list_view.index = 0
 
-        await self._manager.start(job_id=job.id)
+            await self._manager.start(job_id=job.id)
+        except Exception as exc:
+            # Defensa en profundidad: ningún fallo del backend puede
+            # romper la TUI; el job queda señalado en la lista.
+            self.notify(f"No se pudo añadir la descarga: {exc}", severity="error")
+            return
 
         self._toggle_empty()
         self._refresh_stats()

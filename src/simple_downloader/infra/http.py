@@ -68,3 +68,27 @@ class AioHttpClient(HttpClient):
                 yield total, b""
                 async for chunk in response.content.iter_chunked(self._chunk_size):
                     yield None, chunk
+
+
+def describe_http_error(exc: BaseException) -> str | None:
+    """Traduce errores de red/HTTP conocidos a mensajes legibles.
+
+    Devuelve None si la excepción no es de aiohttp, para que el
+    llamador use su propio formato de fallback."""
+    try:
+        from aiohttp import (
+            ClientConnectorError,
+            ClientResponseError,
+            ServerTimeoutError,
+            TooManyRedirects,
+        )
+    except ImportError:
+        return None
+
+    if isinstance(exc, ClientResponseError):
+        return f"HTTP {exc.status} {exc.message or ''} — acceso denegado o recurso no disponible".strip()
+    if isinstance(exc, ClientConnectorError):
+        return f"sin conexión con {exc.host}"
+    if isinstance(exc, (ServerTimeoutError, TooManyRedirects)):
+        return "timeout de red o demasiados redirects"
+    return None

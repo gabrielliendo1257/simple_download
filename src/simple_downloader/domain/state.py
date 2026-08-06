@@ -13,7 +13,9 @@ class DownloadState(Enum):
 
 
 _ALLOWED_TRANSITIONS: dict[DownloadState, frozenset[DownloadState]] = {
-    DownloadState.QUEUED: frozenset({DownloadState.RUNNING, DownloadState.CANCELLED}),
+    DownloadState.QUEUED: frozenset(
+        {DownloadState.RUNNING, DownloadState.CANCELLED, DownloadState.FAILED}
+    ),
     DownloadState.RUNNING: frozenset(
         {
             DownloadState.PAUSED,
@@ -22,7 +24,9 @@ _ALLOWED_TRANSITIONS: dict[DownloadState, frozenset[DownloadState]] = {
             DownloadState.CANCELLED,
         }
     ),
-    DownloadState.PAUSED: frozenset({DownloadState.RUNNING, DownloadState.CANCELLED}),
+    DownloadState.PAUSED: frozenset(
+        {DownloadState.RUNNING, DownloadState.CANCELLED, DownloadState.FAILED}
+    ),
     DownloadState.COMPLETED: frozenset(),
     DownloadState.FAILED: frozenset(),
     DownloadState.CANCELLED: frozenset(),

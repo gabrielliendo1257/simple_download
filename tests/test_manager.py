@@ -69,13 +69,30 @@ class FakeEngine:
         return self._task
 
 
+class BrokenEngine:
+    """Engine cuyo create_task falla en red (p. ej. HLS con 403)."""
+
+    name = "broken"
+
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    def supports(self, url: str) -> bool:
+        return True
+
+    async def create_task(self, request: DownloadRequest) -> DownloadTask:
+        raise self._error
+
+
 def _build(
     task: FakeTask | None = None,
+    engine: object | None = None,
 ) -> tuple[DownloadManager, DownloadScheduler, EventBus]:
     bus = EventBus()
-    engine = FakeEngine(task)
+    if engine is None:
+        engine = FakeEngine(task)
     registry = EngineRegistry()
-    registry.register(engine)
+    registry.register(engine)  # type: ignore[arg-type]
     scheduler = DownloadScheduler(
         bus,
         max_workers=3,
@@ -109,6 +126,53 @@ async def test_start_completes_job() -> None:
     await scheduler.finish()
 
     assert job.state is DownloadState.COMPLETED
+
+
+async def test_start_with_broken_engine_marks_failed_without_raising() -> None:
+    from aiohttp import ClientResponseError
+
+    error = ClientResponseError(
+        request_info=None, history=None, status=403, message="Forbidden"
+    )
+    manager, scheduler, _bus = _build(engine=BrokenEngine(error))
+    job = await manager.enqueue(DownloadRequest(url="https://x/playlist.m3u8"))
+
+    await manager.start(job.id)  # no debe propagar
+
+    assert job.state is DownloadState.FAILED
+    assert "403" in (job.error or "")
+    await scheduler.finish()
+
+
+async def test_start_with_network_error_marks_failed() -> None:
+    manager, scheduler, _bus = _build(engine=BrokenEngine(OSError("boom")))
+    job = await manager.enqueue(DownloadRequest(url="https://x/playlist.m3u8"))
+
+    await manager.start(job.id)
+
+    assert job.state is DownloadState.FAILED
+    assert job.error == "boom"
+    await scheduler.finish()
+
+
+async def test_resume_with_broken_engine_marks_failed() -> None:
+    pause_flag = asyncio.Event()
+    task = FakeTask(steps=10, pause_flag=pause_flag)
+    manager, scheduler, _bus = _build(task)
+
+    job = await manager.enqueue(DownloadRequest(url="https://x/playlist.m3u8"))
+    await manager.start(job.id)
+    await asyncio.sleep(0.05)
+    await manager.pause(job.id)
+    assert job.state is DownloadState.PAUSED
+
+    broken = BrokenEngine(OSError("sin conexión"))
+    manager._engines._engines.insert(0, broken)
+    await manager.resume(job.id)
+
+    assert job.state is DownloadState.FAILED
+    assert job.error == "sin conexión"
+    await scheduler.finish()
 
 
 async def test_failing_task_marks_failed() -> None:
