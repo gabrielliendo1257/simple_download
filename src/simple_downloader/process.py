@@ -77,9 +77,7 @@ class RunningProcess:
 
     async def progress(self) -> AsyncGenerator[DownloadProgress]:
         async for line in self.stdout_lines():
-            if "[download]" in line:
-                print(line)
-            elif line.startswith("PROGRESS="):
+            if line.startswith("PROGRESS="):
                 try:
                     yield DownloadProgress(**json.loads(line[9:]))
                 except json.JSONDecodeError:

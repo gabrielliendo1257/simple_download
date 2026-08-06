@@ -69,7 +69,9 @@ class FakeEngine:
         return self._task
 
 
-def _build(task: FakeTask | None = None) -> tuple[DownloadManager, DownloadScheduler, EventBus]:
+def _build(
+    task: FakeTask | None = None,
+) -> tuple[DownloadManager, DownloadScheduler, EventBus]:
     bus = EventBus()
     engine = FakeEngine(task)
     registry = EngineRegistry()
@@ -208,7 +210,11 @@ async def test_state_change_events_published() -> None:
     await asyncio.sleep(0.05)
     await scheduler.finish()
 
-    assert states == [DownloadState.QUEUED, DownloadState.RUNNING, DownloadState.COMPLETED]
+    assert states == [
+        DownloadState.QUEUED,
+        DownloadState.RUNNING,
+        DownloadState.COMPLETED,
+    ]
 
 
 def test_download_request_immutability() -> None:

@@ -8,11 +8,14 @@ class SourceUnvaliableError(Exception):
         super().__init__()
         self.executable_name = executable_name
 
+
 class ProcessError(Exception):
     stderr: str
+
     def __init__(self, stderr: str, *args: object) -> None:
         super().__init__(*args)
         self.stderr = stderr
+
 
 class JobNotFoundError(Exception):
     job_id: UUID

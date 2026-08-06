@@ -14,7 +14,7 @@ from textual.binding import Binding
 from textual.containers import Container, Horizontal
 from textual.message import Message
 from textual.reactive import reactive
-from textual.widgets import Digits, Footer, Header, ListItem, ListView, Static
+from textual.widgets import Digits, Footer, Header, ListView, Static
 
 from simple_downloader.app.manager import DownloadManager
 from simple_downloader.app.scheduler import DownloadScheduler

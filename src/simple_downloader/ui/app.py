@@ -160,7 +160,6 @@ class DownloadApp(App[None]):
             await self._scheduler.finish()
 
     # ── observadores de eventos del backend ──────────────────────────────
-
     async def _on_job_state(self, event: DownloadStateChangedEvent) -> None:
         job = self._find_job(event.job_id)
         if job is None:
@@ -377,12 +376,11 @@ class DownloadApp(App[None]):
 
         eta = None
         if speed and total and total > downloaded:
-            print("total/downloaded: ", total, " / ", downloaded)
             try:
                 total = int(total)
                 downloaded = int(downloaded)
                 eta = (total - downloaded) / speed
-            except TypeError:
+            except (TypeError, ValueError):
                 total = None
                 downloaded = None
                 eta = None
@@ -419,7 +417,9 @@ class DownloadApp(App[None]):
             completed=sum(1 for j in jobs if j.state is DownloadState.COMPLETED),
             failed=sum(1 for j in jobs if j.state is DownloadState.FAILED),
             speed=sum(
-                (j.progress.speed_bps or 0) for j in jobs if j.progress is not None and j.progress.speed_bps != 'NA'
+                (j.progress.speed_bps or 0)
+                for j in jobs
+                if j.progress is not None and not isinstance(j.progress.speed_bps, str)
             ),
         )
 

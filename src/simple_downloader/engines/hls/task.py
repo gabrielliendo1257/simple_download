@@ -24,6 +24,8 @@ class HlsTask:
     segments: Sequence[Segment]
     max_parallel: int = 6
     init_uri: str | None = None
+    retries: int = 3
+    retry_delay: float = 0.5
 
     def __post_init__(self) -> None:
         self._started = False
@@ -52,7 +54,7 @@ class HlsTask:
     async def _worker(self, segment: Segment) -> None:
         async with self._sem:
             try:
-                data = await self.fetcher.fetch(segment)
+                data = await self._fetch_with_retries(segment)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -60,6 +62,20 @@ class HlsTask:
                 raise
 
             await self._sink.put((segment.index, data))
+
+    async def _fetch_with_retries(self, segment: Segment) -> bytes:
+        last_error: Exception | None = None
+        for attempt in range(self.retries + 1):
+            try:
+                return await self.fetcher.fetch(segment)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                last_error = exc
+                if attempt < self.retries:
+                    await asyncio.sleep(self.retry_delay * (attempt + 1))
+        assert last_error is not None
+        raise last_error
 
     async def _run(self) -> None:
         segments = list(self.segments)

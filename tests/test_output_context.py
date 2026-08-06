@@ -28,9 +28,9 @@ def test_origin_extracts_base_url() -> None:
 
 
 def test_resolve_output_default_name() -> None:
-    assert resolve_output(
-        "https://x/file.mp4", None, default_name="video.ts"
-    ) == Path("video.ts")
+    assert resolve_output("https://x/file.mp4", None, default_name="video.ts") == Path(
+        "video.ts"
+    )
 
 
 def test_resolve_output_filename_in_directory(tmp_path) -> None:
@@ -71,7 +71,9 @@ def test_http_with_context_uses_explicit_referer() -> None:
 
 def test_http_with_context_merges_headers_and_ua() -> None:
     ctx = DownloadContext(
-        referer="https://x.example/", user_agent="Mozilla/5.0", headers={"cookie": "a=1"}
+        referer="https://x.example/",
+        user_agent="Mozilla/5.0",
+        headers={"cookie": "a=1"},
     )
     client = http_with_context(FakeClient(), "https://follame.top/a/x.m3u8", ctx)
     assert client.headers == {

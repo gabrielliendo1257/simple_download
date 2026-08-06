@@ -16,9 +16,7 @@ class AioHttpClient(HttpClient):
         try:
             import aiohttp
         except ImportError as exc:
-            raise ImportError(
-                "aiohttp is required: uv add aiohttp"
-            ) from exc
+            raise ImportError("aiohttp is required: uv add aiohttp") from exc
 
         self._aiohttp = aiohttp
         self._headers = headers
@@ -43,6 +41,15 @@ class AioHttpClient(HttpClient):
                 response.raise_for_status()
                 return await response.read()
 
+    async def get_range(self, url: str, start: int, end: int) -> bytes:
+        headers = {**(self._headers or {}), "Range": f"bytes={start}-{end}"}
+        async with self._aiohttp.ClientSession(
+            headers=headers, timeout=self._timeout
+        ) as session:
+            async with session.get(url) as response:
+                response.raise_for_status()
+                return await response.read()
+
     async def stream(self, url: str):
         """GET streaming: yield (total_bytes, chunk). total_bytes solo
         en el primer item (de Content-Length)."""
@@ -59,7 +66,5 @@ class AioHttpClient(HttpClient):
                 length = response.headers.get("Content-Length")
                 total = int(length) if length is not None else None
                 yield total, b""
-                async for chunk in response.content.iter_chunked(
-                    self._chunk_size
-                ):
+                async for chunk in response.content.iter_chunked(self._chunk_size):
                     yield None, chunk

@@ -19,6 +19,10 @@ def test_forbidden_transitions() -> None:
 
 
 def test_terminal_states_are_dead_ends() -> None:
-    for terminal in (DownloadState.COMPLETED, DownloadState.FAILED, DownloadState.CANCELLED):
+    for terminal in (
+        DownloadState.COMPLETED,
+        DownloadState.FAILED,
+        DownloadState.CANCELLED,
+    ):
         assert not can_transition(terminal, DownloadState.RUNNING)
         assert not can_transition(terminal, DownloadState.QUEUED)

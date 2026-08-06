@@ -1,4 +1,3 @@
-
 import random
 import string
 from typing import cast
@@ -21,21 +20,20 @@ class SimpleDownlader:
         assert self.app.source is not None
 
         list_view_downloads_item = self.app.query_one("#download-list", ListView)
-        download_request = DownloadRequest(
-            url=""
+        download_request = DownloadRequest(url="")
+        job: DownloadJob = await self.app.download_manager.enqueue(
+            request=download_request
         )
-        job: DownloadJob = await self.app.download_manager.enqueue(request=download_request)
-        metadata: VideoMetadata = await self.app.source.get_source(executable_name=ExecutableName.YT_DLP).metadata(url="")
+        metadata: VideoMetadata = await self.app.source.get_source(
+            executable_name=ExecutableName.YT_DLP
+        ).metadata(url="")
 
         caracteres = string.ascii_uppercase + string.digits
-        pnr = ''.join(random.choices(caracteres, k=6))
+        pnr = "".join(random.choices(caracteres, k=6))
         item = DownloadItem(
             download=Download(
-                download_id=pnr,
-                filename=metadata.title,
-                total_bytes=metadata
+                download_id=pnr, filename=metadata.title, total_bytes=metadata
             )
         )
 
-    def start_download(self):
-        ...
+    def start_download(self): ...

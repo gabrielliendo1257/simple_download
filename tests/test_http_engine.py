@@ -42,6 +42,22 @@ def test_http_engine_supports_direct_file_urls() -> None:
     assert not engine.supports("https://x/watch?v=abc")
 
 
+def test_http_engine_supports_media_in_query_param() -> None:
+    engine = HttpEngine(http=FakeStreamClient([]))
+    url = (
+        "https://cdn.leak-sex-tape.com/remote_control.php"
+        "?file=ZYmQu5thjnltY3CQy9qGjA8xedD_NkoJAIS9rviIniovWQTyL7cwRLRWMYwbTgJ"
+        "XxA6sCNepxDGvbYjMdQd01lewTFx_d78oBbdT8s2gJRmkInozz-MUcW1p0hncPRwal"
+        "Qu1KIvv6gRspP0IMVSkGlf6fN82cOBx3KoFFztAZ4XlxpLBPIk8j7B-p4HXktJkq0"
+        "vptAVJgMuR.mp4&acctoken=YzhjYWRlMTE4MWQ0ZjA1ZTY4ZmExNDZmMWJkNmE3ZTQ1"
+    )
+
+    assert engine.supports(url)
+    assert not engine.supports("https://x/remote_control.php?file=report")
+    assert not engine.supports("https://x/remote_control.php?file=page.html")
+    assert not engine.supports("https://x/remote_control.php?token=abc.mp4")
+
+
 def test_http_engine_wins_over_ytdlp_for_mp4() -> None:
     from simple_downloader.engines import EngineRegistry
     from simple_downloader.engines.ytdlp import YtDlpEngine
@@ -52,6 +68,36 @@ def test_http_engine_wins_over_ytdlp_for_mp4() -> None:
 
     engine = registry.engine_for("https://h70v.eulue.com/x/3146165.720.mp4?s=1")
     assert engine.name == "http"
+
+
+def test_http_engine_wins_over_ytdlp_for_query_wrapper() -> None:
+    from simple_downloader.engines import EngineRegistry
+    from simple_downloader.engines.ytdlp import YtDlpEngine
+
+    registry = EngineRegistry()
+    registry.register(HttpEngine(http=FakeStreamClient([])))
+    registry.register(YtDlpEngine(source_provider=object()))  # type: ignore[arg-type]
+
+    engine = registry.engine_for(
+        "https://cdn.leak-sex-tape.com/remote_control.php?file=video.mp4&token=x"
+    )
+    assert engine.name == "http"
+
+
+def test_http_engine_named_from_query_media(tmp_path) -> None:
+    async def drive() -> None:
+        task = await HttpEngine(http=FakeStreamClient([b"data"], total=4)).create_task(
+            DownloadRequest(
+                url="https://cdn.leak-sex-tape.com/remote_control.php"
+                "?file=c8cade1181d4f05e68fa146f1bd6a7.mp4&acctoken=xyz",
+                output=DownloadOutput(directory=tmp_path),
+            )
+        )
+        await task.finalize()
+        return task
+
+    task = asyncio.run(drive())
+    assert (tmp_path / "c8cade1181d4f05e68fa146f1bd6a7.mp4").read_bytes() == b"data"
 
 
 def test_http_task_downloads_all_chunks(tmp_path) -> None:
@@ -132,9 +178,7 @@ def test_http_engine_create_task_uses_referer(tmp_path) -> None:
         task = await HttpEngine(http=client).create_task(
             DownloadRequest(
                 url="https://h70v.eulue.com/video/3146165.720.mp4?s=1",
-                output=DownloadOutput(
-                    directory=tmp_path, filename="out.mp4"
-                ),
+                output=DownloadOutput(directory=tmp_path, filename="out.mp4"),
             )
         )
         await task.finalize()
