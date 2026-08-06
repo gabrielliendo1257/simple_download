@@ -136,13 +136,15 @@ AddDownloadModal {
     border: tall #39c5cf;
 }
 #headers-fields {
-    layout: vertical;
-    height: auto;
-    max-height: 8;
-    overflow-y: auto;
+    height: 6;
+    scrollbar-size-vertical: 1;
+    scrollbar-color: #39c5cf;
+    scrollbar-color-hover: #39c5cf;
+    scrollbar-color-active: #39c5cf;
 }
 .header-row {
     layout: horizontal;
+    height: auto;
 }
 .header-key {
     width: 18;

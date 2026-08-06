@@ -8,7 +8,7 @@ from pathlib import Path
 
 from rich.text import Text
 from textual.binding import Binding
-from textual.containers import Container
+from textual.containers import Container, VerticalScroll
 from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, ListItem, Static
@@ -402,20 +402,18 @@ class AddDownloadModal(ModalScreen[AddDownloadResult | None]):
                 id="add-title",
             )
             yield Static(Text(self._url, style=DIM, no_wrap=False), id="add-url")
-            yield Label("Nombre", classes="field-label")
             yield Input(
                 value=self._default_name,
                 placeholder="Nombre del archivo (sin extensión)",
                 id="add-name",
             )
-            yield Label("Carpeta", classes="field-label")
             yield Input(
                 value=self._default_directory,
                 placeholder="Carpeta de destino",
                 id="add-folder",
             )
             yield Label("Headers (opcional)", classes="field-label")
-            with Container(id="headers-fields"):
+            with VerticalScroll(id="headers-fields"):
                 yield self._make_header_row(0)
             with Container(id="add-actions"):
                 yield Button("Añadir", id="add-submit")
