@@ -18,6 +18,7 @@ from simple_downloader.domain.event import (
     DownloadStateChangedEvent,
 )
 from simple_downloader.domain.models import (
+    DownloadContext,
     DownloadJob,
     DownloadOutput,
     DownloadRequest,
@@ -40,6 +41,7 @@ from simple_downloader.process import AsyncProcessExecutor
 from simple_downloader.sources import SourceProvider
 from simple_downloader.ui.widgets import (
     AddDownloadModal,
+    AddDownloadResult,
     ConfirmModal,
     DetailsModal,
     Download,
@@ -151,6 +153,8 @@ class DownloadApp(App[None]):
         self._source_provider = source_provider
         self._config = load_user_config()
 
+        # Cursor fijo sin parpadeo (tmux/terminales no refrescan el blink)
+        self.query_one("#url-input", Input).cursor_blink = False
         self.query_one("#url-input", Input).focus()
         self._refresh_stats()
         self._toggle_empty()
@@ -291,16 +295,16 @@ class DownloadApp(App[None]):
         self._add_modal = modal
         self.push_screen(
             modal,
-            callback=lambda output: (
-                self._on_add_modal_closed(url, output) if output else None
+            callback=lambda result: (
+                self._on_add_modal_closed(url, result) if result else None
             ),
         )
         if self._source_provider is not None:
             asyncio.create_task(self._fetch_metadata_for_modal(url, modal))
 
-    async def _on_add_modal_closed(self, url: str, output: DownloadOutput) -> None:
+    async def _on_add_modal_closed(self, url: str, result: AddDownloadResult) -> None:
         self._add_modal = None
-        await self._add_job(url, output)
+        await self._add_job(url, result.output, result.headers)
 
     async def _fetch_metadata_for_modal(
         self, url: str, modal: AddDownloadModal
@@ -314,7 +318,12 @@ class DownloadApp(App[None]):
         if meta.title and modal in self.screen_stack:
             modal.apply_external_title(_base_name(meta.title))
 
-    async def _add_job(self, url: str, output: DownloadOutput | None = None) -> None:
+    async def _add_job(
+        self,
+        url: str,
+        output: DownloadOutput | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         assert self._manager is not None
         try:
             title = (
@@ -322,11 +331,13 @@ class DownloadApp(App[None]):
                 if output is not None and output.filename
                 else _title_from_url(url)
             )
+            context = DownloadContext(headers=headers) if headers else None
             job = await self._manager.enqueue(
                 request=DownloadRequest(
                     url=url,
                     title=title,
                     output=output,
+                    context=context,
                 )
             )
             self._jobs[str(job.id)] = job

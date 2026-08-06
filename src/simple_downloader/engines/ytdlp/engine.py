@@ -59,5 +59,6 @@ class YtDlpEngine(Engine):
             format_id=request.format_id,
             extract_audio=request.extract_audio,
             resume=request.resume,
+            headers=request.context.headers if request.context else None,
         )
         return SubprocessTaskAdapter(runner)

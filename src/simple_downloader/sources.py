@@ -72,6 +72,7 @@ class Source(Protocol):
         output: Path | str | None = None,
         format_id: str | None = None,
         resume: bool = False,
+        headers: dict[str, str] | None = None,
     ) -> RunningProcess: ...
 
 
@@ -134,6 +135,7 @@ class YtDlpSource(Source):
         output: Path | str | None = None,
         format_id: str | None = None,
         resume: bool = False,
+        headers: dict[str, str] | None = None,
     ) -> RunningProcess:
         args = ["--newline"]
         args.extend(
@@ -143,6 +145,10 @@ class YtDlpSource(Source):
                 'PROGRESS={"downloaded":"%(progress.downloaded_bytes)s","total":"%(progress.total_bytes)s","speed":"%(progress.speed)s"}',
             ]
         )
+
+        if headers:
+            for key, value in headers.items():
+                args.extend(["--add-header", f"{key}: {value}"])
 
         if resume:
             args.append("-c")
