@@ -276,12 +276,48 @@ class DownloadApp(App[None]):
         if not url or self._manager is None:
             return
         event.input.value = ""
-        self._open_add_modal(url)
+        self.notify("Resolviendo metadatos de la URL…")
+        asyncio.create_task(self._resolve_and_open(url))
 
     # ── helpers ──────────────────────────────────────────────────────────
 
-    def _open_add_modal(self, url: str) -> None:
-        if parse_link(url) is not None:
+    async def _resolve_and_open(self, url: str) -> None:
+        """Resuelve y valida la URL antes de abrir el modal de añadir.
+
+        Si la app no puede resolverla (Telegram sin configurar, URL no
+        reconocida, sin conexión...), notifica el error y no abre nada."""
+        try:
+            title = await self._resolve_title(url)
+        except Exception as exc:
+            self.notify(f"No se pudo resolver la URL: {exc}", severity="error")
+            return
+        self._open_add_modal(url, title)
+
+    async def _resolve_title(self, url: str) -> str | None:
+        link = parse_link(url)
+        if link is not None:
+            return await self._resolve_telegram_title(link)
+        return await self._resolve_web_title(url)
+
+    async def _resolve_telegram_title(self, link: TelegramLink) -> str | None:
+        """Nombre real que reporta Telegram (si lo da); None = aleatorio."""
+        provider = (
+            self._backend.telegram_provider if self._backend is not None else None
+        )
+        if provider is None:
+            raise RuntimeError("Telegram no está configurado")
+        message = await provider.get_message(link.peer, link.message_id)
+        return _telegram_media_name(message) or None
+
+    async def _resolve_web_title(self, url: str) -> str | None:
+        source = self._source_provider.get_source(ExecutableName.YT_DLP)
+        meta = await source.metadata(url)
+        return _base_name(meta.title) if meta.title else None
+
+    def _open_add_modal(self, url: str, title: str | None) -> None:
+        if title:
+            default_name = title
+        elif parse_link(url) is not None:
             # Telegram: nombre aleatorio de entrada; el real llega después
             # por metadata (o se queda el aleatorio si no hay nombre).
             default_name = secrets.token_hex(4)
@@ -299,45 +335,10 @@ class DownloadApp(App[None]):
                 self._on_add_modal_closed(url, result) if result else None
             ),
         )
-        if self._source_provider is not None:
-            asyncio.create_task(self._fetch_metadata_for_modal(url, modal))
 
     async def _on_add_modal_closed(self, url: str, result: AddDownloadResult) -> None:
         self._add_modal = None
         await self._add_job(url, result.output, result.headers)
-
-    async def _fetch_metadata_for_modal(
-        self, url: str, modal: AddDownloadModal
-    ) -> None:
-        """Título real en segundo plano; solo actualiza si el usuario no editó."""
-        link = parse_link(url)
-        if link is not None:
-            await self._fetch_telegram_name(link, modal)
-            return
-        try:
-            source = self._source_provider.get_source(ExecutableName.YT_DLP)
-            meta = await source.metadata(url)
-        except Exception:
-            return
-        if meta.title and modal in self.screen_stack:
-            modal.apply_external_title(_base_name(meta.title))
-
-    async def _fetch_telegram_name(
-        self, link: TelegramLink, modal: AddDownloadModal
-    ) -> None:
-        """El nombre que reporta Telegram (si lo da) se prellena en el modal;
-        si no, se mantiene el nombre aleatorio de entrada."""
-        if self._backend is None or self._backend.telegram_provider is None:
-            return
-        try:
-            message = await self._backend.telegram_provider.get_message(
-                link.peer, link.message_id
-            )
-            name = _telegram_media_name(message)
-        except Exception:
-            return
-        if name and modal in self.screen_stack:
-            modal.apply_external_title(name)
 
     async def _add_job(
         self,
