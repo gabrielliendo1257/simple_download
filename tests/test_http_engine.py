@@ -21,6 +21,33 @@ def test_describe_http_error_translates_timeout() -> None:
     )
 
 
+async def test_http_engine_validate_passes_when_server_responds() -> None:
+    engine = HttpEngine(http=FakeStreamClient(b"data", total=42))
+
+    assert await engine.validate("https://x/file.mp4") is None
+
+
+async def test_http_engine_validate_propagates_unreachable() -> None:
+    class UnreachableClient:
+        async def check(self, url: str) -> int | None:
+            raise ConnectionError("sin conexión")
+
+    engine = HttpEngine(http=UnreachableClient())
+
+    with pytest.raises(ConnectionError):
+        await engine.validate("https://x/file.mp4")
+
+
+async def test_http_engine_validate_noop_without_check() -> None:
+    class MinimalClient:
+        async def get(self, url: str) -> bytes:
+            raise AssertionError("validate no debe descargar el body")
+
+    engine = HttpEngine(http=MinimalClient())
+
+    assert await engine.validate("https://x/file.mp4") is None
+
+
 class FakeStreamClient:
     """Cliente que sirve `data` con soporte de Range simulado.
 
@@ -44,6 +71,9 @@ class FakeStreamClient:
         client = FakeStreamClient(self.data, self.total, self.status_for_range)
         client.referer = referer
         return client
+
+    async def check(self, url: str) -> int | None:
+        return self.total
 
     async def stream(self, url: str, *, offset: int = 0, headers: dict | None = None):
         self.last_offset = offset

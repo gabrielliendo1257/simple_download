@@ -282,22 +282,61 @@ class DownloadApp(App[None]):
     # ── helpers ──────────────────────────────────────────────────────────
 
     async def _resolve_and_open(self, url: str) -> None:
-        """Resuelve y valida la URL antes de abrir el modal de añadir.
+        """Dos estrategias antes de abrir el modal de añadir:
 
-        Si la app no puede resolverla (Telegram sin configurar, URL no
-        reconocida, sin conexión...), notifica el error y no abre nada."""
+        1. Metadata: título real cuando la app puede resolverla.
+        2. Validación ligera por engine: la URL es genuina y descargable
+           (playlist m3u8 real, servidor responde, mensaje TG existe).
+
+        Si la metadata no está disponible (muy común en HLS/descarga
+        directa) NO bloquea: se valida y se abre con nombre por defecto.
+        Solo se notifica error si la validación también falla.
+        """
+        title = None
         try:
             title = await self._resolve_title(url)
-        except Exception as exc:
-            self.notify(f"No se pudo resolver la URL: {exc}", severity="error")
-            return
+        except Exception:
+            title = None
+
+        if title is None:
+            try:
+                await self._validate_url(url)
+            except Exception as exc:
+                self.notify(f"No se pudo resolver la URL: {exc}", severity="error")
+                return
+
         self._open_add_modal(url, title)
 
     async def _resolve_title(self, url: str) -> str | None:
+        """Estrategia 1: metadata. None = sin título conocido."""
         link = parse_link(url)
         if link is not None:
             return await self._resolve_telegram_title(link)
+        engine = self._engine_for(url)
+        if engine is None or engine.name != "yt-dlp":
+            # HLS y descarga directa no tienen metadata previa: solo
+            # validación (strategy 2), sin esperar a yt-dlp.
+            return None
         return await self._resolve_web_title(url)
+
+    def _engine_for(self, url: str):
+        backend = self._backend
+        if backend is None:
+            return None
+        try:
+            return backend.engine_registry.engine_for(url)
+        except Exception:
+            return None
+
+    async def _validate_url(self, url: str) -> None:
+        """Estrategia 2: verificación ligera de que es descargable."""
+        engine = self._engine_for(url)
+        if engine is None:
+            raise RuntimeError("ningún motor soporta esta URL")
+        validate = getattr(engine, "validate", None)
+        if validate is None:
+            return
+        await validate(url)
 
     async def _resolve_telegram_title(self, link: TelegramLink) -> str | None:
         """Nombre real que reporta Telegram (si lo da); None = aleatorio."""

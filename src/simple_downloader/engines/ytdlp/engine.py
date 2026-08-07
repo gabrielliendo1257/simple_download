@@ -62,3 +62,8 @@ class YtDlpEngine(Engine):
             headers=request.context.headers if request.context else None,
         )
         return SubprocessTaskAdapter(runner)
+
+    async def validate(self, url: str) -> None:
+        # La metadata de yt-dlp ya validó la URL: si falló, se cae al
+        # nombre por defecto; nada más que comprobar aquí.
+        return None

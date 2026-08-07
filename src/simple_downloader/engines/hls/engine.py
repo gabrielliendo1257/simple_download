@@ -64,6 +64,16 @@ class HlsEngine(Engine):
             init_uri=playlist.init_uri,
         )
 
+    async def validate(self, url: str) -> None:
+        """Verificación ligera: la URL responde y es una playlist m3u8 real.
+
+        No se resuelven variantes ni se probea el primer segmento: eso
+        queda para create_task."""
+        http = http_with_context(self._http, url, None)
+        text = (await http.get(url)).decode(errors="replace")
+        if "#EXTM3U" not in text:
+            raise ValueError(f"no es una playlist m3u8 válida: {url}")
+
     async def _resolve_playlist(self, url: str, http: HttpClient) -> HlsPlaylist:
         text = (await http.get(url)).decode(errors="replace")
 

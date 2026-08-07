@@ -190,6 +190,19 @@ def test_create_task_raises_when_not_configured() -> None:
         asyncio.run(engine.create_task(request))
 
 
+def test_validate_passes_when_message_has_media() -> None:
+    engine = _engine(FakeClient(FakeMessage()))
+
+    assert asyncio.run(engine.validate("https://t.me/mi_canal/123")) is None
+
+
+def test_validate_raises_when_message_has_no_media() -> None:
+    engine = _engine(FakeClient(FakeMessage(media=None)))
+
+    with pytest.raises(ValueError, match="no tiene media"):
+        asyncio.run(engine.validate("https://t.me/mi_canal/123"))
+
+
 # ── task: un solo segmento ─────────────────────────────────────────────────
 
 

@@ -50,6 +50,15 @@ class TelegramEngine(Engine):
             title=default_name,
         )
 
+    async def validate(self, url: str) -> None:
+        """Verificación ligera: el mensaje existe y tiene media."""
+        link = parse_link(url)
+        if link is None:
+            raise ValueError(f"no es un link de Telegram: {url}")
+        message = await self._provider.get_message(link.peer, link.message_id)
+        if message is None or not getattr(message, "media", None):
+            raise ValueError(f"el mensaje {link.message_id} no tiene media")
+
 
 def _document_name(link: TelegramLink, message) -> str:
     """Nombre del documento tal como lo reporta Telegram.

@@ -90,3 +90,14 @@ class HttpEngine(Engine):
             media={"title": name},
         )
         return HttpDownloadTask(url=request.url, out_file=out_file, http=http)
+
+    async def validate(self, url: str) -> None:
+        """Verificación ligera: el servidor responde al recurso.
+
+        Lanza en 4xx/5xx/errores de red; si el cliente no soporta
+        `check` (fakes), se asume que es descargable."""
+        http = http_with_context(self._http, url, None)
+        check = getattr(http, "check", None)
+        if check is None:
+            return
+        await check(url)

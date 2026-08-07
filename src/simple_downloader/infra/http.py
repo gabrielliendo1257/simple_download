@@ -48,20 +48,29 @@ class AioHttpClient(HttpClient):
                 response.raise_for_status()
                 return await response.read()
 
-    async def size(self, url: str) -> int | None:
-        """Tamaño total del recurso sin descargar el body.
+    async def check(self, url: str) -> int | None:
+        """Verifica que el recurso exista y responda sin descargar el body.
 
-        Pide bytes=0-0 y lee solo las cabeceras. Si el servidor ignora
-        el rango (200), Content-Length es igualmente el tamaño completo.
-        Devuelve None si el servidor no da tamaño o falla la conexión
-        (best-effort: el total es solo para la UI).
+        Pide bytes=0-0 y lee solo las cabeceras. Lanza (4xx/5xx, errores
+        de red) si el recurso no es accesible; devuelve el tamaño total
+        si el servidor lo informa. Si el servidor ignora el rango (200),
+        Content-Length es igualmente el tamaño completo.
+        """
+        async with self._aiohttp.ClientSession(
+            headers=self._headers, timeout=self._timeout
+        ) as session:
+            async with session.get(url, headers={"Range": "bytes=0-0"}) as response:
+                response.raise_for_status()
+                return _total_from_headers(response)
+
+    async def size(self, url: str) -> int | None:
+        """Tamaño total del recurso (best-effort, para la UI).
+
+        Devuelve None si el servidor no da tamaño o falla la conexión;
+        para saber si el recurso es accesible, usar `check`.
         """
         try:
-            async with self._aiohttp.ClientSession(
-                headers=self._headers, timeout=self._timeout
-            ) as session:
-                async with session.get(url, headers={"Range": "bytes=0-0"}) as response:
-                    return _total_from_headers(response)
+            return await self.check(url)
         except Exception:
             return None
 

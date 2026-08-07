@@ -123,3 +123,34 @@ def test_hls_engine_sends_referer_on_every_request() -> None:
 def test_ytdlp_engine_is_catch_all() -> None:
     engine = YtDlpEngine(source_provider=object())  # type: ignore[arg-type]
     assert engine.supports("https://anything.else/file.mp4")
+
+
+def test_hls_engine_validate_accepts_real_playlist() -> None:
+    import asyncio
+
+    from simple_downloader.engines.hls.engine import HlsEngine
+
+    class PlaylistClient:
+        async def get(self, url: str) -> bytes:
+            return b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nv1.m3u8\n"
+
+    engine = HlsEngine(PlaylistClient())
+
+    assert asyncio.run(engine.validate("https://x/main.m3u8")) is None
+
+
+def test_hls_engine_validate_rejects_non_playlist() -> None:
+    import asyncio
+
+    import pytest
+
+    from simple_downloader.engines.hls.engine import HlsEngine
+
+    class HtmlClient:
+        async def get(self, url: str) -> bytes:
+            return b"<html>not a playlist</html>"
+
+    engine = HlsEngine(HtmlClient())
+
+    with pytest.raises(ValueError, match="m3u8"):
+        asyncio.run(engine.validate("https://x/main.m3u8"))

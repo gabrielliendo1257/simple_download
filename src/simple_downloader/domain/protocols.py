@@ -32,6 +32,13 @@ class Engine(Protocol):
 
     async def create_task(self, request: DownloadRequest) -> DownloadTask: ...
 
+    async def validate(self, url: str) -> None:
+        """Verificación ligera de que la URL es genuina y descargable.
+
+        Sin metadata (GET de la playlist, range check, etc.). Lanza
+        con un mensaje legible si la URL no es descargable."""
+        ...
+
 
 class HttpClient(Protocol):
     async def get(self, url: str) -> bytes: ...
