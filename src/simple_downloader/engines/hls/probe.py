@@ -9,6 +9,23 @@ _TS_SYNC = 0x47
 _TS_PACKET = 188
 _PROBE_BYTES = 8192
 
+# Cajas MP4 que pueden encabezar un segmento fMP4 (.m4s). Los streams de
+# Apple suelen arrancar con `emsg` (eventos) antes del primer moof.
+_FMP4_BOXES = (
+    b"ftyp",
+    b"moof",
+    b"styp",
+    b"sidx",
+    b"emsg",
+    b"mdat",
+    b"free",
+    b"skip",
+    b"prft",
+    b"mehd",
+    b"mfro",
+    b"pssh",
+)
+
 
 class SegmentFormat(Enum):
     TS = auto()
@@ -29,7 +46,7 @@ def sniff_segment(raw: bytes) -> SegmentFormat:
         return SegmentFormat.PNG_WRAPPED
 
     box = raw[4:8]
-    if box in (b"ftyp", b"moof", b"styp", b"sidx"):
+    if box in _FMP4_BOXES:
         return SegmentFormat.FMP4
 
     if len(raw) >= _TS_PACKET and raw[0] == _TS_SYNC and raw[_TS_PACKET] == _TS_SYNC:

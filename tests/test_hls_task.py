@@ -17,6 +17,9 @@ class FakeSegmentFetcher:
         await asyncio.sleep(self._delay)
         return self._payload
 
+    async def size(self, uri: str) -> int | None:
+        return len(self._payload)
+
 
 def _segments(count: int) -> list[Segment]:
     return [Segment(index=i, uri=f"https://s/seg{i}.ts") for i in range(count)]
@@ -106,6 +109,52 @@ async def test_hls_task_progress_is_monotonic(tmp_path) -> None:
         seen.append(progress.downloaded_bytes)
 
     assert seen == sorted(seen)
+
+
+async def test_hls_task_reports_total_from_segment_sizes(tmp_path) -> None:
+    class SizedFetcher:
+        def __init__(self) -> None:
+            self.probed: list[str] = []
+
+        async def fetch(self, segment: Segment) -> bytes:
+            return b"x" * 10
+
+        async def size(self, uri: str) -> int | None:
+            self.probed.append(uri)
+            return 10
+
+    out = tmp_path / "out.ts"
+    task = HlsTask(
+        out_file=out,
+        fetcher=SizedFetcher(),
+        segments=_segments(4),
+    )
+
+    seen = [p async for p in task.progress()]
+    result = await task.finalize()
+
+    assert result.exit_code == 0
+    assert seen[-1].total_bytes == 40
+    assert seen[-1].downloaded_bytes == 40
+    assert seen[-1].total_bytes == seen[-1].downloaded_bytes
+
+
+async def test_hls_task_total_is_none_when_size_unavailable(tmp_path) -> None:
+    class SizelessFetcher:
+        async def fetch(self, segment: Segment) -> bytes:
+            return b"x" * 10
+
+    out = tmp_path / "out.ts"
+    task = HlsTask(
+        out_file=out,
+        fetcher=SizelessFetcher(),
+        segments=_segments(2),
+    )
+
+    seen = [p async for p in task.progress()]
+
+    assert seen[-1].downloaded_bytes == 20
+    assert seen[-1].total_bytes is None
 
 
 async def test_hls_task_segment_failure_propagates(tmp_path) -> None:

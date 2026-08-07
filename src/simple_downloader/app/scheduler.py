@@ -1,4 +1,6 @@
 import asyncio
+from dataclasses import replace
+from time import monotonic
 from uuid import UUID
 
 from simple_downloader.db import InMemoryRepository
@@ -31,6 +33,7 @@ class DownloadScheduler:
         self._queue: asyncio.Queue[DownloadJob | object] = asyncio.Queue()
         self._running: dict[UUID, asyncio.Task] = {}
         self._job_repository = job_repository or InMemoryRepository()
+        self._speed_state: dict[UUID, tuple[float, int, float]] = {}
 
     def start(self) -> None:
         for _ in range(self._max_workers):
@@ -66,6 +69,7 @@ class DownloadScheduler:
 
         try:
             async for progress in job.task.progress():
+                progress = self._with_speed(job.id, progress, monotonic())
                 job.progress = progress
                 if job.state is not DownloadState.RUNNING:
                     continue
@@ -100,6 +104,42 @@ class DownloadScheduler:
                 self._carry_resume_notice(job)
                 await self._job_repository.save(job)
                 await self._event_bus.publish(_state_event(job))
+
+    def _with_speed(
+        self,
+        job_id: UUID,
+        progress,
+        now: float,
+    ):
+        """Adjunta la velocidad a un evento de progreso.
+
+        La velocidad es una derivada temporal del progreso, así que se
+        calcula aquí (para todos los engines por igual) en lugar de en
+        cada tarea. Si el engine ya la reporta (yt-dlp), se respeta.
+        """
+        if progress.speed_bps is not None:
+            self._speed_state[job_id] = (
+                now,
+                progress.downloaded_bytes,
+                progress.speed_bps,
+            )
+            return progress
+
+        state = self._speed_state.get(job_id)
+        if state is None:
+            self._speed_state[job_id] = (now, progress.downloaded_bytes, 0.0)
+            return progress
+
+        prev_time, prev_bytes, prev_speed = state
+        elapsed = now - prev_time
+        if elapsed < 0.5:
+            # Eventos muy seguidos (por chunk): ruido; se conserva la anterior.
+            return progress
+
+        instant = (progress.downloaded_bytes - prev_bytes) / elapsed
+        speed = 0.5 * instant + 0.5 * prev_speed if prev_speed else instant
+        self._speed_state[job_id] = (now, progress.downloaded_bytes, speed)
+        return replace(progress, speed_bps=speed)
 
     def _carry_resume_notice(self, job: DownloadJob) -> None:
         """Si la tarea tuvo que reiniciar desde cero (servidor sin soporte

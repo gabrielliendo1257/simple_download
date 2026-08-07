@@ -41,6 +41,23 @@ class AioHttpClient(HttpClient):
                 response.raise_for_status()
                 return await response.read()
 
+    async def size(self, url: str) -> int | None:
+        """Tamaño total del recurso sin descargar el body.
+
+        Pide bytes=0-0 y lee solo las cabeceras. Si el servidor ignora
+        el rango (200), Content-Length es igualmente el tamaño completo.
+        Devuelve None si el servidor no da tamaño o falla la conexión
+        (best-effort: el total es solo para la UI).
+        """
+        try:
+            async with self._aiohttp.ClientSession(
+                headers=self._headers, timeout=self._timeout
+            ) as session:
+                async with session.get(url, headers={"Range": "bytes=0-0"}) as response:
+                    return _total_from_headers(response)
+        except Exception:
+            return None
+
     async def get_range(self, url: str, start: int, end: int) -> bytes:
         headers = {**(self._headers or {}), "Range": f"bytes={start}-{end}"}
         async with self._aiohttp.ClientSession(

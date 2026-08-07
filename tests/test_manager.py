@@ -471,3 +471,39 @@ def test_download_request_immutability() -> None:
     request = DownloadRequest(url="https://x/file.mp4")
     with pytest.raises(Exception):
         request.url = "other"
+
+
+def test_scheduler_computes_speed_from_progress_deltas() -> None:
+    scheduler = DownloadScheduler(EventBus())
+    job_id = uuid4()
+
+    first = scheduler._with_speed(
+        job_id, DownloadProgress(downloaded_bytes=0, total_bytes=1000), now=10.0
+    )
+    assert first.speed_bps is None
+
+    # Eventos separados por menos de 0.5s: ruido, se conserva la anterior.
+    close = scheduler._with_speed(
+        job_id, DownloadProgress(downloaded_bytes=10, total_bytes=1000), now=10.3
+    )
+    assert close.speed_bps is None
+
+    # 510 bytes en 1s -> 510 B/s
+    paced = scheduler._with_speed(
+        job_id, DownloadProgress(downloaded_bytes=510, total_bytes=1000), now=11.0
+    )
+    assert paced.speed_bps == pytest.approx(510.0)
+
+    # Suavizado: 1000 B/s instantáneo mezclado al 50 % con el anterior.
+    smoothed = scheduler._with_speed(
+        job_id, DownloadProgress(downloaded_bytes=1510, total_bytes=1000), now=12.0
+    )
+    assert smoothed.speed_bps == pytest.approx(755.0)
+
+    # Si el engine reporta velocidad (yt-dlp), se respeta tal cual.
+    reported = scheduler._with_speed(
+        job_id,
+        DownloadProgress(downloaded_bytes=1510, total_bytes=1000, speed_bps=12345.0),
+        now=13.0,
+    )
+    assert reported.speed_bps == 12345.0

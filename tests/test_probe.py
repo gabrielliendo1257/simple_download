@@ -34,6 +34,17 @@ def test_sniff_detects_fmp4() -> None:
     )
 
 
+def test_sniff_detects_emsg_prefixed_fmp4() -> None:
+    # Los streams de Apple encabezan los .m4s con una caja emsg (eventos)
+    # antes del primer moof.
+    assert (
+        sniff_segment(b"\x00\x00\x00\x8demsg\x01\x00\x00\x00\x00\x01_\x90")
+        is SegmentFormat.FMP4
+    )
+    assert sniff_segment(b"\x00\x00\x00\x10prft") is SegmentFormat.FMP4
+    assert sniff_segment(b"\x00\x00\x00\x18pssh") is SegmentFormat.FMP4
+
+
 def test_sniff_detects_ts() -> None:
     raw = bytes([0x47]) * 377
     assert sniff_segment(raw) is SegmentFormat.TS

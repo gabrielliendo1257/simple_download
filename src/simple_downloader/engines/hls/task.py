@@ -37,6 +37,7 @@ class HlsTask:
         self._done: asyncio.Event | None = None
         self._workers: list[asyncio.Task[None]] = []
         self._written: int = 0
+        self._total: int | None = None
         self._run_task: asyncio.Task[None] | None = None
 
     def _start(self) -> asyncio.Task[None]:
@@ -78,11 +79,37 @@ class HlsTask:
         assert last_error is not None
         raise last_error
 
+    async def _measure_total(self) -> int | None:
+        """Suma del tamaño de todos los segmentos (best-effort).
+
+        Se usa solo para mostrar porcentaje/velocidad en la UI: si el
+        cliente no lo soporta o algún segmento falla, devuelve None y
+        la UI cae al modo sin total."""
+        get_size = getattr(self.fetcher, "size", None)
+        if get_size is None:
+            return None
+
+        sem = asyncio.Semaphore(min(self.max_parallel, 12))
+        sizes: list[int | None] = [None] * len(self.segments)
+
+        async def measure(index: int, uri: str) -> None:
+            async with sem:
+                sizes[index] = await get_size(uri)
+
+        await asyncio.gather(
+            *(measure(i, segment.uri) for i, segment in enumerate(self.segments))
+        )
+        if any(size is None for size in sizes):
+            return None
+        return sum(sizes)  # type: ignore[arg-type]
+
     async def _run(self) -> None:
         segments = list(self.segments)
         if not segments:
             self._done.set()
             return
+
+        self._total = await self._measure_total()
 
         self._workers = [
             asyncio.create_task(self._worker(segment)) for segment in segments
@@ -136,7 +163,9 @@ class HlsTask:
             self._change.clear()
             if self._written != written:
                 written = self._written
-                yield DownloadProgress(downloaded_bytes=written, total_bytes=None)
+                yield DownloadProgress(
+                    downloaded_bytes=written, total_bytes=self._total
+                )
 
         await run_task
 

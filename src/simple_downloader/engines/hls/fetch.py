@@ -77,3 +77,13 @@ class SegmentFetcher:
             return unwrap_ts(raw)
         except ValueError:
             return raw
+
+    async def size(self, uri: str) -> int | None:
+        """Tamaño del recurso en bytes (best-effort, para la UI).
+
+        Devuelve None si el cliente HTTP no lo soporta o el servidor
+        no informa tamaño."""
+        get_size = getattr(self._http, "size", None)
+        if get_size is None:
+            return None
+        return await get_size(uri)
