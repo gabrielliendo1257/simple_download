@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import threading
 from pathlib import Path
 from typing import Any, Callable, Coroutine
@@ -279,15 +280,22 @@ class TelegramClientProvider:
         except ImportError as exc:
             raise ImportError("telethon is required: uv add telethon") from exc
 
-        session = _SESSION_DIR / f"{self._config.session_name}.session"
-        client = TelegramClient(
-            str(session),
-            api_id=self._config.api_id,
-            api_hash=self._config.api_hash,
-            # Sin sleeps silenciosos: los bloqueos los traducimos a
-            # TelegramThrottledError y se avisan (flood_sleep_threshold=0).
-            flood_sleep_threshold=0,
-        )
+        try:
+            session = _session_path(self._config.session_name)
+            client = TelegramClient(
+                str(session),
+                api_id=self._config.api_id,
+                api_hash=self._config.api_hash,
+                # Sin sleeps silenciosos: los bloqueos los traducimos a
+                # TelegramThrottledError y se avisan (flood_sleep_threshold=0).
+                flood_sleep_threshold=0,
+            )
+        except sqlite3.OperationalError as exc:
+            raise ValueError(
+                f"no se pudo abrir la sesión de Telegram en {session}: "
+                "el directorio no existe o no es escribible (revisá tu $HOME "
+                "en Termux)"
+            ) from exc
         self._dl_slots = asyncio.Semaphore(_MAX_CONCURRENT_DOWNLOADS)
         self._status = STATUS_CONNECTING
         try:
@@ -350,6 +358,17 @@ class TelegramClientProvider:
             return ""
         await qr.recreate()
         return qr.url
+
+
+def _session_path(session_name: str) -> Path:
+    """Ruta del archivo de sesión de Telethon, creando el directorio.
+
+    Telethon abre la sesión con SQLite y NO crea los directorios padre:
+    si `~/.config/simple-downloader` no existe (o no es escribible, p.ej.
+    en Termux con un HOME raro), sqlite falla con "unable to open
+    database file" sin decir dónde está el archivo."""
+    _SESSION_DIR.mkdir(parents=True, exist_ok=True)
+    return _SESSION_DIR / f"{session_name}.session"
 
 
 def _translate_throttle(exc: Exception) -> Exception:

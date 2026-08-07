@@ -651,3 +651,16 @@ async def test_task_reports_waiting_for_slot(tmp_path) -> None:
         pass
     await task.finalize()
     assert task.waiting_for_slot is False
+
+
+def test_session_path_creates_parent_directory(tmp_path, monkeypatch) -> None:
+    from simple_downloader.engines.telegram import client as client_module
+    from simple_downloader.engines.telegram.client import _session_path
+
+    session_dir = tmp_path / "no" / "existe"
+    monkeypatch.setattr(client_module, "_SESSION_DIR", session_dir)
+
+    path = _session_path("mi_sesion")
+
+    assert path == session_dir / "mi_sesion.session"
+    assert path.parent.is_dir()
