@@ -31,6 +31,7 @@ class Format:
     ext: str
     resolution: str
     filesize_approx: int | None = None
+    abr: int | None = None  # bitrate de audio (formatos "audio only")
 
 
 class SourceProvider:
@@ -131,6 +132,7 @@ class YtDlpSource(Source):
                     fmt["ext"],
                     fmt["resolution"],
                     fmt.get("filesize_approx"),
+                    fmt.get("abr"),
                 )
             )
         return formats

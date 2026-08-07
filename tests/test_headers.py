@@ -138,3 +138,15 @@ def test_ytdlp_download_omits_cookie_flags_when_absent() -> None:
     args = executor.args or []
     assert "--cookies" not in args
     assert "--cookies-from-browser" not in args
+
+
+def test_ytdlp_download_passes_format_selector_as_single_arg() -> None:
+    source, executor = _source()
+
+    import asyncio
+
+    selector = "bestvideo[height<=720]+bestaudio/best[height<=720]/best"
+    asyncio.run(source.download("https://x/video", format_id=selector))
+
+    args = executor.args or []
+    assert args[args.index("-f") + 1] == selector

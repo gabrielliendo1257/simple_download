@@ -175,28 +175,38 @@ def test_format_field_options_default_first_and_sorted() -> None:
         [
             Format("137", "mp4", "1920x1080", 100),
             Format("136", "mp4", "1280x720", 50),
-            Format("18", "mp4", "640x360", 10),
         ]
     )
 
     assert options[0].value == "best"
-    assert [option.value for option in options[1:]] == ["137", "136", "18"]
-    assert options[1].label == "1080p (mp4) · 100 B"
-    assert options[2].label == "720p (mp4) · 50 B"
+    assert options[0].label == "Vídeo + audio · Mejor combinado (sin ffmpeg)"
+    assert options[1].label == "Vídeo + audio · 1080p (mp4)"
+    assert options[1].value == (
+        "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best"
+    )
+    assert options[2].label == "Solo vídeo · 1080p (mp4)"
+    assert options[2].value == "bestvideo[height<=1080]/best[height<=1080]/best"
+    assert options[3].label == "Vídeo + audio · 720p (mp4)"
+    assert options[4].label == "Solo vídeo · 720p (mp4)"
 
 
-def test_format_field_options_skips_audio_only() -> None:
+def test_format_field_options_includes_audio_only_with_bitrate() -> None:
     from simple_downloader.engines.ytdlp.engine import format_field_options
     from simple_downloader.sources import Format
 
     options = format_field_options(
         [
-            Format("140", "m4a", "audio only", 5),
+            Format("140", "m4a", "audio only", 5, abr=128),
+            Format("251", "webm", "audio only", 5, abr=160),
             Format("137", "mp4", "1920x1080", 100),
         ]
     )
 
-    assert [option.value for option in options] == ["best", "137"]
+    # Audio al final, mejor bitrate primero.
+    assert options[-2].label == "Solo audio · webm · 160 kbps"
+    assert options[-2].value == "251"
+    assert options[-1].label == "Solo audio · m4a · 128 kbps"
+    assert options[-1].value == "140"
 
 
 def test_format_field_options_prefers_mp4_per_height() -> None:
@@ -210,7 +220,8 @@ def test_format_field_options_prefers_mp4_per_height() -> None:
         ]
     )
 
-    assert [option.value for option in options] == ["best", "137"]
+    assert "1080p (mp4)" in options[1].label
+    assert "1080p (mp4)" in options[2].label
 
 
 def test_resolution_height_parsing() -> None:
@@ -220,6 +231,53 @@ def test_resolution_height_parsing() -> None:
     assert _resolution_height("720") == 720
     assert _resolution_height("audio only") is None
     assert _resolution_height("") is None
+
+
+def test_ytdlp_formats_parses_abr() -> None:
+    import asyncio
+    import json
+    from types import SimpleNamespace
+
+    from simple_downloader.executor import Executable, ExecutableStatus
+    from simple_downloader.sources import YtDlpSource
+
+    class FakeExec:
+        async def execute(self, request):
+            return SimpleNamespace(
+                exit_code=0,
+                stdout=json.dumps(
+                    {
+                        "formats": [
+                            {
+                                "format_id": "140",
+                                "ext": "m4a",
+                                "resolution": "audio only",
+                                "filesize_approx": 5,
+                                "abr": 128,
+                            },
+                            {
+                                "format_id": "137",
+                                "ext": "mp4",
+                                "resolution": "1920x1080",
+                                "filesize_approx": 100,
+                            },
+                        ]
+                    }
+                ),
+            )
+
+    source = YtDlpSource(
+        executable=Executable(
+            status=ExecutableStatus.ACTIVE, name="yt-dlp", path="/usr/bin/yt-dlp"
+        ),
+        executor=FakeExec(),
+    )
+
+    formats = asyncio.run(source.formats("https://x/v"))
+
+    assert formats[0].format_id == "140"
+    assert formats[0].abr == 128
+    assert formats[1].abr is None
 
 
 def test_ytdlp_modal_options_from_source_with_cache() -> None:
@@ -235,7 +293,7 @@ def test_ytdlp_modal_options_from_source_with_cache() -> None:
             calls.append(url)
             return [
                 Format("137", "mp4", "1920x1080", 100),
-                Format("140", "m4a", "audio only", 5),
+                Format("140", "m4a", "audio only", 5, abr=128),
             ]
 
     class FakeProvider:
@@ -247,7 +305,12 @@ def test_ytdlp_modal_options_from_source_with_cache() -> None:
     first = asyncio.run(engine.modal_options("https://x/video"))
     second = asyncio.run(engine.modal_options("https://x/video"))
 
-    assert [option.value for option in first["format_id"]] == ["best", "137"]
+    assert [option.value for option in first["format_id"]] == [
+        "best",
+        "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
+        "bestvideo[height<=1080]/best[height<=1080]/best",
+        "140",
+    ]
     assert second == first
     assert calls == ["https://x/video"]  # cacheado: una sola llamada
 

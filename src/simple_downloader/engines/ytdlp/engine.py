@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-from urllib.parse import urlsplit
-
 from simple_downloader.domain.models import DownloadOutput, DownloadRequest
 from simple_downloader.domain.options import (
     COOKIES_FIELD,
@@ -111,32 +108,57 @@ class YtDlpEngine(Engine):
 _EXT_PRIORITY = {"mp4": 0, "m4a": 0, "webm": 1}
 
 
+def _video_audio_selector(height: int) -> str:
+    """Vídeo + audio hasta `height`: merge con la mejor pista de audio,
+    con fallback a un archivo combinado y luego al mejor."""
+    return f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
+
+
+def _video_only_selector(height: int) -> str:
+    """Solo vídeo hasta `height` (sin pista de audio), con fallback a
+    un combinado por si no hay formato solo-vídeo."""
+    return f"bestvideo[height<={height}]/best[height<={height}]/best"
+
+
 def format_field_options(formats: list[Format]) -> list[FieldOption]:
     """Convierte los formatos de yt-dlp en opciones para el modal.
 
-    Reglas:
-    - siempre hay un default: "Mejor combinado" (`best`, video+audio en
-      un archivo, sin necesidad de ffmpeg para unir).
-    - solo formatos con vídeo (se descartan los "audio only").
-    - una opción por altura de resolución, prefiriendo mp4/m4a.
-    - ordenadas de mayor a menor resolución.
+    Un solo Select con las tres variantes que el usuario puede querer:
+    - Vídeo + audio (default: "best", un archivo combinado sin ffmpeg;
+      por altura: merge bestvideo+bestaudio con fallbacks).
+    - Solo vídeo por altura (bestvideo).
+    - Solo audio: los formatos de audio directos de la URL (sin -x).
+    Ordenadas: combinado/mejor primero, alturas desc, audio al final.
     """
-    options = [FieldOption("Mejor combinado (sin ffmpeg)", "best")]
+    options = [FieldOption("Vídeo + audio · Mejor combinado (sin ffmpeg)", "best")]
 
-    best_by_height: dict[int, Format] = {}
+    video_by_height: dict[int, Format] = {}
+    audio_by_ext: dict[str, Format] = {}
     for fmt in formats:
         height = _resolution_height(fmt.resolution)
-        if height is None:
-            continue  # audio-only u otro formato sin vídeo
-        current = best_by_height.get(height)
-        priority = _EXT_PRIORITY.get(fmt.ext, 2)
-        if current is None or priority < _EXT_PRIORITY.get(current.ext, 2):
-            best_by_height[height] = fmt
+        if height is not None:
+            current = video_by_height.get(height)
+            priority = _EXT_PRIORITY.get(fmt.ext, 2)
+            if current is None or priority < _EXT_PRIORITY.get(current.ext, 2):
+                video_by_height[height] = fmt
+        elif fmt.ext:
+            # audio only: la mejor calidad por contenedor
+            current = audio_by_ext.get(fmt.ext)
+            if current is None or (fmt.abr or 0) > (current.abr or 0):
+                audio_by_ext[fmt.ext] = fmt
 
-    for height in sorted(best_by_height, reverse=True):
-        fmt = best_by_height[height]
-        size = f" · {_human_size(fmt.filesize_approx)}" if fmt.filesize_approx else ""
-        options.append(FieldOption(f"{height}p ({fmt.ext}){size}", fmt.format_id))
+    for height in sorted(video_by_height, reverse=True):
+        fmt = video_by_height[height]
+        options.append(
+            FieldOption(f"Vídeo + audio · {height}p ({fmt.ext})", _video_audio_selector(height))
+        )
+        options.append(
+            FieldOption(f"Solo vídeo · {height}p ({fmt.ext})", _video_only_selector(height))
+        )
+
+    for fmt in sorted(audio_by_ext.values(), key=lambda f: -(f.abr or 0)):
+        abr = f" · {fmt.abr} kbps" if fmt.abr else ""
+        options.append(FieldOption(f"Solo audio · {fmt.ext}{abr}", fmt.format_id))
     return options
 
 
@@ -146,13 +168,3 @@ def _resolution_height(resolution: str) -> int | None:
     if not digits:
         return None
     return digits[-1] if len(digits) > 1 else digits[0]
-
-
-def _human_size(bytes_: int | None) -> str:
-    if not bytes_:
-        return ""
-    for unit in ("B", "KB", "MB", "GB"):
-        if bytes_ < 1024:
-            return f"{bytes_:.0f} {unit}"
-        bytes_ //= 1024
-    return f"{bytes_} GB"

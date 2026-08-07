@@ -15,10 +15,18 @@ class SubprocessTaskAdapter(DownloadTask):
 
     async def progress(self) -> AsyncIterator[DownloadProgress]:
         async for progress in self._process.progress():
+            try:
+                speed = float(progress.speed)
+                downloaded = int(progress.downloaded)
+                total = int(progress.total)
+            except ValueError:
+                speed = 0.0
+                downloaded = 0
+                total = 0
             yield DownloadProgress(
-                downloaded_bytes=progress.downloaded,
-                total_bytes=progress.total,
-                speed_bps=progress.speed,
+                downloaded_bytes=downloaded,
+                total_bytes=total,
+                speed_bps=speed,
             )
 
     async def cancel(self) -> None:

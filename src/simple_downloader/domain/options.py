@@ -74,7 +74,7 @@ PARALLEL_SEGMENTS_FIELD = ModalField(
 
 FORMAT_FIELD = ModalField(
     "format_id",
-    "Resolución",
-    "Elegí una resolución",
+    "Formato y calidad",
+    "Elegí un formato",
     FieldKind.CHOICE,
 )

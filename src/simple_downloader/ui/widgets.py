@@ -94,9 +94,9 @@ class Download:
         if bytes_ is None:
             return "--"
         for unit in ("B", "KB", "MB", "GB", "TB"):
-            if bytes_ < 1024:
+            if int(bytes_) < 1024:
                 return f"{bytes_:.1f} {unit}"
-            bytes_ = int(bytes_ / 1024)
+            bytes_ = int(int(bytes_) / 1024)
         return f"{bytes_:.1f} PB"
 
     @property
