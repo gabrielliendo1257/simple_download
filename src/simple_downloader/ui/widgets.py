@@ -423,7 +423,7 @@ class TelegramLoginModal(ModalScreen[bool]):
     def __init__(self, provider) -> None:
         super().__init__()
         self._provider = provider
-        self._task: asyncio.Task | None = None
+        self._qr_task: asyncio.Task | None = None
 
     def compose(self) -> ComposeResult:
         with Container(id="qr-card"):
@@ -436,11 +436,15 @@ class TelegramLoginModal(ModalScreen[bool]):
             yield Static("[esc] Cancelar", id="modal-hint")
 
     def on_mount(self) -> None:
-        self._task = asyncio.create_task(self._run())
+        # OJO: NO usar self._task acá: Textual guarda su message pump en
+        # `_task` y al remover el widget lo espera (`_prune` -> gather).
+        # Pisarlo con nuestro loop infinito cuelga el cierre del modal y
+        # el cancel() revienta la app entera.
+        self._qr_task = asyncio.create_task(self._run())
 
     async def on_unmount(self) -> None:
-        if self._task is not None:
-            self._task.cancel()
+        if self._qr_task is not None:
+            self._qr_task.cancel()
 
     def action_cancel(self) -> None:
         self.dismiss(False)

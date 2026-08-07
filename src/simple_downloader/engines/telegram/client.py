@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+import sys
 import threading
 from pathlib import Path
 from typing import Any, Callable, Coroutine
@@ -33,11 +34,15 @@ class TelegramNotAuthorizedError(RuntimeError):
     """No hay sesión autorizada: el cliente conectó pero nadie escaneó el QR.
 
     No es un error de config: la app debe ofrecer el login en runtime
-    (QR en la TUI) en lugar de pedir teléfono/código por stdin."""
+    (QR en la TUI) en lugar de pedir teléfono/código por stdin. Si la
+    sesión existía pero ya no se reconoce, el mensaje dice la ruta del
+    archivo (p.ej. Termux/Android puede corromper el .session al matar
+    el proceso con la base abierta)."""
 
-    def __init__(self) -> None:
+    def __init__(self, session_file: Path | None = None) -> None:
+        hint = f" (archivo de sesión: {session_file})" if session_file else ""
         super().__init__(
-            "Telegram no está autenticado: apretá Ctrl+T para escanear el QR"
+            f"Telegram no está autenticado{hint}: apretá Ctrl+T para escanear el QR"
         )
 
 
@@ -75,6 +80,7 @@ class TelegramClientProvider:
         self._dl_slots: asyncio.Semaphore | None = None
         self._qr: Any | None = None
         self._status: str = STATUS_IDLE
+        self._session_file: Path | None = None
 
     # ── hilo worker ─────────────────────────────────────────────────────
 
@@ -250,23 +256,42 @@ class TelegramClientProvider:
         authorized = await self._submit(lambda: client.is_user_authorized())
         if not authorized:
             self._status = STATUS_AUTH_REQUIRED
-            raise TelegramNotAuthorizedError()
+            raise TelegramNotAuthorizedError(self._session_file)
         self._status = STATUS_AUTHENTICATED
         return client
 
     async def _ensure_connected(self) -> Any:
         """Cliente conectado (sin exigir autorización: sirve para el QR)."""
-        if self._client is None:
-            if self._client_ready is None:
-                self._client_ready = asyncio.ensure_future(
-                    self._submit(self._connect)
-                )
+        if self._client is not None:
+            if await self._submit(lambda: self._is_connected(self._client)):
+                return self._client
+            # Conexión caída (Android/Termux puede dormir el proceso y
+            # Telethon no reconecta solo): se vuelve a conectar con la
+            # misma sesión, sin pedir credenciales de nuevo.
             try:
-                self._client = await self._client_ready
+                await self._submit(lambda: self._client.connect())
             except Exception:
-                self._client_ready = None  # permite reintentar la conexión
+                self._client = None
+                self._client_ready = None
+                self._status = STATUS_ERROR
                 raise
+            return self._client
+        if self._client_ready is None:
+            self._client_ready = asyncio.ensure_future(
+                self._submit(self._connect)
+            )
+        try:
+            self._client = await self._client_ready
+        except Exception:
+            self._client_ready = None  # permite reintentar la conexión
+            raise
         return self._client
+
+    async def _is_connected(self, client: Any) -> bool:
+        """`client.is_connected()` es síncrono en Telethon: se envuelve
+        para poder correrlo en el worker vía `_submit` (que espera una
+        corrutina)."""
+        return client.is_connected()
 
     async def _connect(self) -> Any:
         if self._config is None or not self._config.is_usable():
@@ -282,6 +307,7 @@ class TelegramClientProvider:
 
         try:
             session = _session_path(self._config.session_name)
+            self._session_file = session
             client = TelegramClient(
                 str(session),
                 api_id=self._config.api_id,
@@ -303,11 +329,17 @@ class TelegramClientProvider:
         except Exception as exc:
             self._status = STATUS_ERROR
             raise
-        self._status = (
-            STATUS_AUTHENTICATED
-            if await client.is_user_authorized()
-            else STATUS_AUTH_REQUIRED
-        )
+        authorized = await client.is_user_authorized()
+        self._status = STATUS_AUTHENTICATED if authorized else STATUS_AUTH_REQUIRED
+        if not authorized and session.exists():
+            # El archivo de sesión está pero Telethon no reconoce la cuenta:
+            # en Termux/Android es típico que el proceso murió con la base
+            # abierta y la dejó corrupta. Borrar y re-escanear el QR.
+            print(
+                "aviso: el archivo de sesión existe pero no se reconoce: "
+                f"{session} (¿corrupta? borrala y re-escaneá el QR)",
+                file=sys.stderr,
+            )
         return client
 
     # ── login QR (estado: una sesión dura ~30s; recrear al expirar) ─────

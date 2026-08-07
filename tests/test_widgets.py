@@ -44,3 +44,42 @@ async def test_suggester_returns_none_without_match(tmp_path) -> None:
 
 async def test_suggester_returns_none_on_empty_value(tmp_path) -> None:
     assert await PathSuggester().get_suggestion("") is None
+
+
+class _FakeQRProvider:
+    async def qr_begin(self) -> str:
+        return "https://t.me/login/abc"
+
+    async def qr_wait(self, timeout: float = 25.0) -> bool:
+        await asyncio.sleep(0.05)
+        return False
+
+    async def qr_refresh(self) -> str:
+        return "https://t.me/login/abc2"
+
+
+async def test_telegram_login_modal_closes_on_escape_without_killing_app() -> None:
+    from textual.app import App
+    from textual.screen import ModalScreen
+
+    from simple_downloader.ui.widgets import TelegramLoginModal
+
+    class Host(App[None]):
+        def __init__(self) -> None:
+            super().__init__()
+            self.modal: ModalScreen[bool] | None = None
+
+        async def on_mount(self) -> None:
+            self.modal = TelegramLoginModal(_FakeQRProvider())
+            await self.push_screen(self.modal)
+
+    app = Host()
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause(0.2)
+        await pilot.press("escape")
+        await pilot.pause(0.2)
+
+        # El modal cerró y la app sigue viva (regresión: el modal pisaba
+        # `_task` de Textual y el cierre mataba la app).
+        assert app.screen is app.screen_stack[0]
+        assert app.is_running

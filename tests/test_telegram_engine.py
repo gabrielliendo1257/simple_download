@@ -653,6 +653,38 @@ async def test_task_reports_waiting_for_slot(tmp_path) -> None:
     assert task.waiting_for_slot is False
 
 
+class DroppedClient(FakeClient):
+    """Cliente cuyo socket se cayó (Android durmió el proceso)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.connected = True
+        self.reconnects = 0
+
+    def is_connected(self) -> bool:
+        return self.connected
+
+    async def connect(self) -> None:
+        self.reconnects += 1
+        self.connected = True
+
+
+async def test_provider_reconnects_after_dropped_connection() -> None:
+    client = DroppedClient()
+    provider = ThreadedFakeProvider(client)
+    provider._client = client  # el cliente ya estaba conectado antes
+    provider._status = STATUS_AUTHENTICATED
+
+    client.connected = False  # se cayó la conexión
+
+    result = await provider.start()
+
+    assert result is client
+    assert client.reconnects == 1
+    assert client.connected
+    await provider.disconnect()
+
+
 def test_session_path_creates_parent_directory(tmp_path, monkeypatch) -> None:
     from simple_downloader.engines.telegram import client as client_module
     from simple_downloader.engines.telegram.client import _session_path

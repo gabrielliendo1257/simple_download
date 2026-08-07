@@ -210,6 +210,13 @@ class DownloadApp(App[None]):
                 severity="warning",
             )
             return
+        if backend.telegram_provider.status() == STATUS_AUTHENTICATED:
+            # Ya hay sesión válida: no tiene sentido abrir el login.
+            self.notify(
+                "Ya estás autenticado en Telegram.",
+                severity="information",
+            )
+            return
         self.push_screen(
             TelegramLoginModal(backend.telegram_provider),
             callback=lambda ok: (
