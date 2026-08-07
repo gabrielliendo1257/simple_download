@@ -61,6 +61,8 @@ class Download:
     total_bytes: int
     downloaded_bytes: int = 0
     speed_bps: float = 0.0
+    segments_done: int | None = None
+    segments_total: int | None = None
     status: DownloadStatus = DownloadStatus.QUEUED
     eta_sec: float | None = None
     error_message: str | None = None
@@ -205,6 +207,8 @@ class DownloadItem(ListItem):
         size = f" {downloaded} / {dl.total_str}" if total else f" {downloaded}"
 
         extra: list[str] = []
+        if dl.segments_done is not None and dl.segments_total:
+            extra.append(f" seg {dl.segments_done}/{dl.segments_total}")
         if dl.speed_bps:
             extra.append(f" {dl.speed_str}")
         if dl.speed_bps and width >= 96:
@@ -289,6 +293,14 @@ class DetailsModal(ModalScreen[None]):
             ("Motor", Text(dl.engine or "—", style=ACCENT)),
             ("Tamaño", Text(dl.total_str if dl.total_bytes else "—")),
             ("Descargado", Text(f"{dl.downloaded_str}  ({dl.progress_pct})")),
+            (
+                "Segmentos",
+                Text(
+                    f"{dl.segments_done} / {dl.segments_total}"
+                    if dl.segments_total
+                    else "—"
+                ),
+            ),
             ("Velocidad", Text(dl.speed_str if dl.speed_bps else "—")),
             ("ETA", Text(dl.eta_str)),
             ("Destino", Text(dl.destination or "—")),

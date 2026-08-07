@@ -27,6 +27,8 @@ class HlsTask:
     init_uri: str | None = None
     retries: int = 3
     retry_delay: float = 0.5
+    recovery_retries: int = 3
+    recovery_delay: float = 2.0
 
     def __post_init__(self) -> None:
         self._started = False
@@ -37,6 +39,7 @@ class HlsTask:
         self._done: asyncio.Event | None = None
         self._workers: list[asyncio.Task[None]] = []
         self._written: int = 0
+        self._segments_done: int = 0
         self._total: int | None = None
         self._run_task: asyncio.Task[None] | None = None
 
@@ -103,6 +106,24 @@ class HlsTask:
             return None
         return sum(sizes)  # type: ignore[arg-type]
 
+    async def _recover_segment(self, segment: Segment) -> bytes:
+        """Reintentos extra para un segmento que ya falló sus reintentos.
+
+        Corre en el hilo escritor mientras los demás workers siguen
+        descargando; solo si esto también se agota, la descarga falla.
+        """
+        last_error: Exception | None = None
+        for attempt in range(self.recovery_retries):
+            await asyncio.sleep(self.recovery_delay * (2**attempt))
+            try:
+                return await self.fetcher.fetch(segment)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                last_error = exc
+        assert last_error is not None
+        raise last_error
+
     async def _run(self) -> None:
         segments = list(self.segments)
         if not segments:
@@ -126,7 +147,12 @@ class HlsTask:
                 while expected < len(segments):
                     index, data = await self._sink.get()
                     if data is None:
-                        raise SegmentDownloadError(index)
+                        try:
+                            data = await self._recover_segment(segments[index])
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as exc:
+                            raise SegmentDownloadError(index) from exc
 
                     pending[index] = data
 
@@ -136,10 +162,11 @@ class HlsTask:
                             break
                         handle.write(chunk)
                         self._written += len(chunk)
-                        self._change.set()
                         expected += 1
+                        self._segments_done = expected
+                        self._change.set()
 
-                await asyncio.gather(*self._workers)
+                await asyncio.gather(*self._workers, return_exceptions=True)
             except asyncio.CancelledError:
                 for worker in self._workers:
                     worker.cancel()
@@ -150,6 +177,7 @@ class HlsTask:
     async def progress(self) -> AsyncIterator[DownloadProgress]:
         run_task = self._start()
         written = 0
+        segments_done = 0
 
         while not self._done.is_set():
             done_waiter = asyncio.create_task(self._done.wait())
@@ -161,10 +189,14 @@ class HlsTask:
             done_waiter.cancel()
 
             self._change.clear()
-            if self._written != written:
+            if self._written != written or self._segments_done != segments_done:
                 written = self._written
+                segments_done = self._segments_done
                 yield DownloadProgress(
-                    downloaded_bytes=written, total_bytes=self._total
+                    downloaded_bytes=written,
+                    total_bytes=self._total,
+                    segments_done=segments_done,
+                    segments_total=len(self.segments),
                 )
 
         await run_task

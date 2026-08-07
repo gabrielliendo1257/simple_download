@@ -134,6 +134,8 @@ def _encode(job: DownloadJob) -> str:
                 "downloaded_bytes": progress.downloaded_bytes,
                 "total_bytes": progress.total_bytes,
                 "speed_bps": progress.speed_bps,
+                "segments_done": progress.segments_done,
+                "segments_total": progress.segments_total,
             }
             if progress is not None
             else None
@@ -193,6 +195,8 @@ def _decode(raw: str) -> DownloadJob:
             downloaded_bytes=progress_data["downloaded_bytes"],
             total_bytes=progress_data.get("total_bytes"),
             speed_bps=progress_data.get("speed_bps"),
+            segments_done=progress_data.get("segments_done"),
+            segments_total=progress_data.get("segments_total"),
         )
         if progress_data is not None
         else None

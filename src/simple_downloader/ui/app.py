@@ -436,6 +436,8 @@ class DownloadApp(App[None]):
             total_bytes=total or 0,
             downloaded_bytes=downloaded,
             speed_bps=speed or 0.0,
+            segments_done=progress.segments_done if progress else None,
+            segments_total=progress.segments_total if progress else None,
             status=_UI_TO_STATUS[job.state],
             eta_sec=eta,
             error_message=job.error,

@@ -77,6 +77,8 @@ class DownloadProgress:
     downloaded_bytes: int
     total_bytes: int | None = None
     speed_bps: float | None = None
+    segments_done: int | None = None
+    segments_total: int | None = None
 
 
 @dataclass(frozen=True)

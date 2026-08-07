@@ -137,6 +137,8 @@ async def test_hls_task_reports_total_from_segment_sizes(tmp_path) -> None:
     assert seen[-1].total_bytes == 40
     assert seen[-1].downloaded_bytes == 40
     assert seen[-1].total_bytes == seen[-1].downloaded_bytes
+    assert seen[-1].segments_done == 4
+    assert seen[-1].segments_total == 4
 
 
 async def test_hls_task_total_is_none_when_size_unavailable(tmp_path) -> None:
@@ -167,6 +169,58 @@ async def test_hls_task_segment_failure_propagates(tmp_path) -> None:
         out_file=out,
         fetcher=FailingFetcher(),
         segments=_segments(2),
+        retries=0,
+        recovery_retries=0,
+        retry_delay=0,
+        recovery_delay=0,
+    )
+
+    with pytest.raises(SegmentDownloadError):
+        await task.progress().__aiter__().__anext__()
+        await task.finalize()
+
+
+async def test_hls_task_recovers_flaky_segment(tmp_path) -> None:
+    class FlakyFetcher:
+        def __init__(self) -> None:
+            self._calls: dict[int, int] = {}
+
+        async def fetch(self, segment: Segment) -> bytes:
+            self._calls[segment.index] = self._calls.get(segment.index, 0) + 1
+            if segment.index == 1 and self._calls[segment.index] <= 2:
+                raise RuntimeError("flaky")
+            return bytes([segment.index])
+
+    out = tmp_path / "out.ts"
+    task = HlsTask(
+        out_file=out,
+        fetcher=FlakyFetcher(),
+        segments=_segments(3),
+        retries=0,
+        recovery_retries=2,
+        retry_delay=0,
+        recovery_delay=0,
+    )
+
+    await asyncio.gather(task.progress().__aiter__().__anext__(), task.finalize())
+
+    assert out.read_bytes() == bytes([0, 1, 2])
+
+
+async def test_hls_task_fails_when_segment_never_recovers(tmp_path) -> None:
+    class StubbornFetcher:
+        async def fetch(self, segment: Segment) -> bytes:
+            raise RuntimeError("stubborn")
+
+    out = tmp_path / "out.ts"
+    task = HlsTask(
+        out_file=out,
+        fetcher=StubbornFetcher(),
+        segments=_segments(3),
+        retries=0,
+        recovery_retries=1,
+        retry_delay=0,
+        recovery_delay=0,
     )
 
     with pytest.raises(SegmentDownloadError):
