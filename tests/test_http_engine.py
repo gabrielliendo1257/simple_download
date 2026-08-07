@@ -9,6 +9,16 @@ from simple_downloader.domain.models import (
 )
 from simple_downloader.engines.common import resume_plan, save_resume_meta
 from simple_downloader.engines.http import HttpDownloadTask, HttpEngine
+from simple_downloader.infra.http import describe_http_error
+
+
+def test_describe_http_error_translates_timeout() -> None:
+    assert describe_http_error(TimeoutError()) == (
+        "timeout: el servidor no respondió a tiempo"
+    )
+    assert describe_http_error(asyncio.TimeoutError()) == (
+        "timeout: el servidor no respondió a tiempo"
+    )
 
 
 class FakeStreamClient:

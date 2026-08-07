@@ -231,8 +231,12 @@ class DownloadApp(App[None]):
         )
 
     async def _cancel_confirmed(self, job_id: UUID) -> None:
-        if self._manager is not None:
-            await self._manager.cancel(job_id=job_id)
+        try:
+            if self._manager is not None:
+                await self._manager.cancel(job_id=job_id)
+        except Exception as exc:
+            # Tarea fire-and-forget: nunca debe soltar un traceback.
+            self.notify(f"No se pudo cancelar: {exc}", severity="error")
 
     async def action_discard(self) -> None:
         job = self._selected_job()

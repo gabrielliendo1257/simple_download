@@ -21,7 +21,14 @@ class AioHttpClient(HttpClient):
         self._aiohttp = aiohttp
         self._headers = headers
         self._timeout_sec = timeout
-        self._timeout = aiohttp.ClientTimeout(total=timeout)
+        # Sin total: una descarga lenta pero viva no se corta; el timeout
+        # solo salta cuando no llegan datos (conexión o lectura estancada).
+        self._timeout = aiohttp.ClientTimeout(
+            total=None,
+            connect=timeout,
+            sock_connect=timeout,
+            sock_read=timeout,
+        )
         self._chunk_size = chunk_size
 
     def with_referer(self, referer: str) -> AioHttpClient:
@@ -121,6 +128,10 @@ def describe_http_error(exc: BaseException) -> str | None:
 
     Devuelve None si la excepción no es de aiohttp, para que el
     llamador use su propio formato de fallback."""
+    # TimeoutError (asyncio/builtin en 3.11+): str() es vacío, hay que
+    # traducirlo o el job queda con un error incomprensible.
+    if isinstance(exc, TimeoutError):
+        return "timeout: el servidor no respondió a tiempo"
     try:
         from aiohttp import (
             ClientConnectorError,

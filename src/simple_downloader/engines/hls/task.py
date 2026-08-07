@@ -130,49 +130,56 @@ class HlsTask:
             self._done.set()
             return
 
-        self._total = await self._measure_total()
-
-        self._workers = [
-            asyncio.create_task(self._worker(segment)) for segment in segments
-        ]
-
-        pending: dict[int, bytes] = {}
-        expected = 0
-
-        with open(self.out_file, "wb") as handle:
+        # Todo lo que puede fallar queda dentro del try/finally: si algo
+        # lanza antes de marcar _done, progress() se colgaría en RUNNING.
+        try:
             try:
-                if self.init_uri is not None:
-                    handle.write(await self.fetcher.fetch_init(self.init_uri))
+                self._total = await self._measure_total()
+            except Exception:
+                # Best-effort: sin total la UI solo pierde el porcentaje.
+                self._total = None
 
-                while expected < len(segments):
-                    index, data = await self._sink.get()
-                    if data is None:
-                        try:
-                            data = await self._recover_segment(segments[index])
-                        except asyncio.CancelledError:
-                            raise
-                        except Exception as exc:
-                            raise SegmentDownloadError(index) from exc
+            self._workers = [
+                asyncio.create_task(self._worker(segment)) for segment in segments
+            ]
 
-                    pending[index] = data
+            pending: dict[int, bytes] = {}
+            expected = 0
+
+            with open(self.out_file, "wb") as handle:
+                try:
+                    if self.init_uri is not None:
+                        handle.write(await self.fetcher.fetch_init(self.init_uri))
 
                     while expected < len(segments):
-                        chunk = pending.pop(expected, None)
-                        if chunk is None:
-                            break
-                        handle.write(chunk)
-                        self._written += len(chunk)
-                        expected += 1
-                        self._segments_done = expected
-                        self._change.set()
+                        index, data = await self._sink.get()
+                        if data is None:
+                            try:
+                                data = await self._recover_segment(segments[index])
+                            except asyncio.CancelledError:
+                                raise
+                            except Exception as exc:
+                                raise SegmentDownloadError(index) from exc
 
-                await asyncio.gather(*self._workers, return_exceptions=True)
-            except asyncio.CancelledError:
-                for worker in self._workers:
-                    worker.cancel()
-                raise
-            finally:
-                self._done.set()
+                        pending[index] = data
+
+                        while expected < len(segments):
+                            chunk = pending.pop(expected, None)
+                            if chunk is None:
+                                break
+                            handle.write(chunk)
+                            self._written += len(chunk)
+                            expected += 1
+                            self._segments_done = expected
+                            self._change.set()
+
+                    await asyncio.gather(*self._workers, return_exceptions=True)
+                except asyncio.CancelledError:
+                    for worker in self._workers:
+                        worker.cancel()
+                    raise
+        finally:
+            self._done.set()
 
     async def progress(self) -> AsyncIterator[DownloadProgress]:
         run_task = self._start()

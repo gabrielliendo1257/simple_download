@@ -66,7 +66,7 @@ async def build_backend() -> Backend:
     if config.telegram.is_usable():
         # Conexión de Telegram en background: el cliente corre ya conectado
         # en su loop dedicado cuando arranque la primera descarga.
-        asyncio.create_task(telegram_provider.start())
+        asyncio.create_task(_start_telegram(telegram_provider))
     engine_registry.register(TelegramEngine(client_provider=telegram_provider))
     engine_registry.register(YtDlpEngine(source_provider=source_provider))
 
@@ -93,3 +93,12 @@ async def build_backend() -> Backend:
         config=config,
         telegram_provider=telegram_provider,
     )
+
+
+async def _start_telegram(telegram_provider) -> None:
+    """Fire-and-forget con manejo de error: un fallo de arranque de
+    Telegram no debe imprimir tracebacks ni matar la app."""
+    try:
+        await telegram_provider.start()
+    except Exception as exc:
+        print(f"aviso: Telegram no arrancó: {exc}")

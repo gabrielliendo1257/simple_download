@@ -159,6 +159,29 @@ async def test_hls_task_total_is_none_when_size_unavailable(tmp_path) -> None:
     assert seen[-1].total_bytes is None
 
 
+async def test_hls_task_size_failure_does_not_hang_download(tmp_path) -> None:
+    class BrokenSizeFetcher:
+        async def fetch(self, segment: Segment) -> bytes:
+            return b"x" * 10
+
+        async def size(self, uri: str) -> int | None:
+            raise RuntimeError("size boom")
+
+    out = tmp_path / "out.ts"
+    task = HlsTask(
+        out_file=out,
+        fetcher=BrokenSizeFetcher(),
+        segments=_segments(3),
+    )
+
+    seen = [p async for p in task.progress()]
+    result = await task.finalize()
+
+    assert result.exit_code == 0
+    assert out.read_bytes() == b"x" * 30
+    assert all(p.total_bytes is None for p in seen)
+
+
 async def test_hls_task_segment_failure_propagates(tmp_path) -> None:
     class FailingFetcher:
         async def fetch(self, segment: Segment) -> bytes:
