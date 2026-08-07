@@ -7,6 +7,7 @@ from simple_downloader.domain.models import DownloadRequest
 from simple_downloader.domain.options import (
     HEADERS_FIELD,
     USER_AGENT_FIELD,
+    FieldOption,
     ModalField,
 )
 from simple_downloader.domain.protocols import DownloadTask, Engine, HttpClient
@@ -80,6 +81,9 @@ class HttpEngine(Engine):
 
     def modal_fields(self) -> list[ModalField]:
         return [HEADERS_FIELD, USER_AGENT_FIELD]
+
+    async def modal_options(self, url: str) -> dict[str, list[FieldOption]]:
+        return {}
 
     async def create_task(self, request: DownloadRequest) -> DownloadTask:
         http = http_with_context(self._http, request.url, request.context)

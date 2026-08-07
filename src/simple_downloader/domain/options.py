@@ -11,6 +11,18 @@ class FieldKind(Enum):
     PATH = auto()  # Input de rutas con autocompletado (PathInput)
     NUMBER = auto()  # Input numérico (validado al confirmar)
     HEADERS = auto()  # Filas clave/valor dinámicas (modal de headers)
+    CHOICE = auto()  # Select desplegable (opciones dinámicas de la URL)
+
+
+@dataclass(frozen=True)
+class FieldOption:
+    """Opción de un campo CHOICE: lo que se muestra vs. lo que se envía.
+
+    Ej. resolución: label "1080p (mp4)" -> value "137" (format_id de yt-dlp).
+    """
+
+    label: str
+    value: str
 
 
 @dataclass(frozen=True)
@@ -23,12 +35,17 @@ class ModalField:
 
     La clave (`key`) pertenece a un vocabulario compartido que la app
     traduce a `DownloadContext` (`context_from_fields`).
+
+    Los campos CHOICE llevan las opciones vacías en la spec estática;
+    la app las rellena en runtime con `Engine.modal_options(url)`
+    (especificación dinámica según la URL resuelta).
     """
 
     key: str
     label: str
     placeholder: str = ""
     kind: FieldKind = FieldKind.TEXT
+    options: tuple[FieldOption, ...] = ()
 
 
 # Vocabulario compartido entre engines (keys usadas por context_from_fields).
@@ -53,4 +70,11 @@ PARALLEL_SEGMENTS_FIELD = ModalField(
     "Segmentos en paralelo",
     "6",
     FieldKind.NUMBER,
+)
+
+FORMAT_FIELD = ModalField(
+    "format_id",
+    "Resolución",
+    "Elegí una resolución",
+    FieldKind.CHOICE,
 )

@@ -164,7 +164,92 @@ def test_ytdlp_modal_fields_includes_cookies() -> None:
     from simple_downloader.engines.ytdlp import YtDlpEngine
 
     engine = YtDlpEngine(source_provider=object())  # type: ignore[arg-type]
-    assert _keys(engine.modal_fields()) == ["headers", "cookies_path"]
+    assert _keys(engine.modal_fields()) == ["headers", "cookies_path", "format_id"]
+
+
+def test_format_field_options_default_first_and_sorted() -> None:
+    from simple_downloader.engines.ytdlp.engine import format_field_options
+    from simple_downloader.sources import Format
+
+    options = format_field_options(
+        [
+            Format("137", "mp4", "1920x1080", 100),
+            Format("136", "mp4", "1280x720", 50),
+            Format("18", "mp4", "640x360", 10),
+        ]
+    )
+
+    assert options[0].value == "best"
+    assert [option.value for option in options[1:]] == ["137", "136", "18"]
+    assert options[1].label == "1080p (mp4) · 100 B"
+    assert options[2].label == "720p (mp4) · 50 B"
+
+
+def test_format_field_options_skips_audio_only() -> None:
+    from simple_downloader.engines.ytdlp.engine import format_field_options
+    from simple_downloader.sources import Format
+
+    options = format_field_options(
+        [
+            Format("140", "m4a", "audio only", 5),
+            Format("137", "mp4", "1920x1080", 100),
+        ]
+    )
+
+    assert [option.value for option in options] == ["best", "137"]
+
+
+def test_format_field_options_prefers_mp4_per_height() -> None:
+    from simple_downloader.engines.ytdlp.engine import format_field_options
+    from simple_downloader.sources import Format
+
+    options = format_field_options(
+        [
+            Format("248", "webm", "1920x1080", 80),
+            Format("137", "mp4", "1920x1080", 100),
+        ]
+    )
+
+    assert [option.value for option in options] == ["best", "137"]
+
+
+def test_resolution_height_parsing() -> None:
+    from simple_downloader.engines.ytdlp.engine import _resolution_height
+
+    assert _resolution_height("1920x1080") == 1080
+    assert _resolution_height("720") == 720
+    assert _resolution_height("audio only") is None
+    assert _resolution_height("") is None
+
+
+def test_ytdlp_modal_options_from_source_with_cache() -> None:
+    import asyncio
+
+    from simple_downloader.engines.ytdlp import YtDlpEngine
+    from simple_downloader.sources import Format
+
+    calls = []
+
+    class FakeFormatsSource:
+        async def formats(self, url):
+            calls.append(url)
+            return [
+                Format("137", "mp4", "1920x1080", 100),
+                Format("140", "m4a", "audio only", 5),
+            ]
+
+    class FakeProvider:
+        def get_source(self, executable_name):
+            return FakeFormatsSource()
+
+    engine = YtDlpEngine(source_provider=FakeProvider())
+
+    first = asyncio.run(engine.modal_options("https://x/video"))
+    second = asyncio.run(engine.modal_options("https://x/video"))
+
+    assert [option.value for option in first["format_id"]] == ["best", "137"]
+    assert second == first
+    assert calls == ["https://x/video"]  # cacheado: una sola llamada
 
 
 def test_hls_engine_validate_accepts_real_playlist() -> None:

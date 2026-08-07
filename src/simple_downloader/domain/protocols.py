@@ -9,7 +9,7 @@ from simple_downloader.domain.models import (
     DownloadRequest,
     DownloadResult,
 )
-from simple_downloader.domain.options import ModalField
+from simple_downloader.domain.options import FieldOption, ModalField
 
 
 class DownloadTask(Protocol):
@@ -38,6 +38,14 @@ class Engine(Protocol):
         resolvió la URL: telegram no pide cookies, yt-dlp no pide
         segmentos, etc. Las keys usan el vocabulario compartido de
         `domain/options` (la TUI lo traduce a DownloadContext)."""
+        ...
+
+    async def modal_options(self, url: str) -> dict[str, list[FieldOption]]:
+        """Opciones dinámicas por URL para los campos CHOICE.
+
+        Ej. yt-dlp devuelve las resoluciones reales del video (spec en
+        runtime): el modal las muestra en un Select. Vacío = el campo
+        CHOICE no se renderiza."""
         ...
 
     async def create_task(self, request: DownloadRequest) -> DownloadTask: ...

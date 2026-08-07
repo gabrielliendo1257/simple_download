@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from simple_downloader.ui.app import context_from_fields
+from simple_downloader.ui.app import context_from_fields, format_id_from_fields
 
 
 def test_context_from_fields_none_when_empty() -> None:
@@ -45,3 +45,11 @@ def test_context_from_fields_rejects_bad_parallel() -> None:
         context_from_fields({"max_parallel_segments": "abc"})
     with pytest.raises(ValueError, match="segmentos"):
         context_from_fields({"max_parallel_segments": "0"})
+
+
+def test_format_id_from_fields() -> None:
+    assert format_id_from_fields(None) is None
+    assert format_id_from_fields({}) is None
+    assert format_id_from_fields({"format_id": "137"}) == "137"
+    assert format_id_from_fields({"format_id": "best"}) == "best"
+    assert format_id_from_fields({"user_agent": "x"}) is None

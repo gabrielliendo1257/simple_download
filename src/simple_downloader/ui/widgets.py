@@ -15,7 +15,7 @@ from textual.containers import Container, VerticalScroll
 from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.suggester import Suggester
-from textual.widgets import Button, Input, Label, ListItem, Static
+from textual.widgets import Button, Input, Label, ListItem, Select, Static
 
 from simple_downloader.domain.models import DownloadOutput
 from simple_downloader.domain.options import FieldKind, ModalField
@@ -594,6 +594,16 @@ class AddDownloadModal(ModalScreen[AddDownloadResult | None]):
                     classes="field-input",
                     suggester=PathSuggester(),
                 )
+            elif spec.kind is FieldKind.CHOICE:
+                yield Label(spec.label, classes="field-label")
+                yield Select(
+                    [(option.label, option.value) for option in spec.options],
+                    prompt=spec.placeholder,
+                    value=spec.options[0].value,
+                    allow_blank=False,
+                    id=f"field-{spec.key}",
+                    classes="field-input",
+                )
             else:
                 yield Label(spec.label, classes="field-label")
                 yield Input(
@@ -688,7 +698,8 @@ class AddDownloadModal(ModalScreen[AddDownloadResult | None]):
         if next_id is None:
             self._confirm()
             return
-        self.query_one(f"#{next_id}", Input).focus()
+        # Los campos pueden ser Input, PathInput o Select: foco genérico.
+        self.query_one(f"#{next_id}").focus()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "add-submit":
@@ -758,6 +769,10 @@ class AddDownloadModal(ModalScreen[AddDownloadResult | None]):
                     if key and value:
                         lines.append(f"{key}: {value}")
                 values[spec.key] = "\n".join(lines)
+            elif spec.kind is FieldKind.CHOICE:
+                values[spec.key] = (
+                    self.query_one(f"#field-{spec.key}", Select).value or ""
+                )
             else:
                 values[spec.key] = (
                     self.query_one(f"#field-{spec.key}", Input).value.strip()
