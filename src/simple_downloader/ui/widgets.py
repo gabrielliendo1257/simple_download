@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -7,10 +8,12 @@ from enum import Enum, auto
 from pathlib import Path
 
 from rich.text import Text
+from textual import events
 from textual.binding import Binding
 from textual.containers import Container, VerticalScroll
 from textual.reactive import reactive
 from textual.screen import ModalScreen
+from textual.suggester import Suggester
 from textual.widgets import Button, Input, Label, ListItem, Static
 
 from simple_downloader.domain.models import DownloadOutput
@@ -398,6 +401,58 @@ class AddDownloadResult:
     headers: dict[str, str] | None
 
 
+class PathSuggester(Suggester):
+    """Completa rutas del filesystem: sugerencia fantasma estilo shell.
+
+    Las sugerencias son relativas a lo escrito: `~/do` completa a
+    `~/downloads/` (conservando `~`), y los directorios llevan `/`
+    final para distinguirlos de los archivos.
+    """
+
+    async def get_suggestion(self, value: str) -> str | None:
+        if not value:
+            return None
+
+        base = os.path.dirname(value)
+        prefix = os.path.basename(value)
+        list_base = os.path.expanduser(base) or "."
+
+        try:
+            entries = sorted(os.listdir(list_base))
+        except OSError:
+            return None
+
+        matches = [entry for entry in entries if entry.startswith(prefix)]
+        dirs = [
+            entry
+            for entry in matches
+            if os.path.isdir(os.path.join(list_base, entry))
+        ]
+        files = [
+            entry
+            for entry in matches
+            if not os.path.isdir(os.path.join(list_base, entry))
+        ]
+
+        best = (dirs + files)[0] if dirs or files else None
+        if best is None:
+            return None
+        if best in dirs:
+            best += "/"
+        return os.path.join(base, best) if base else best
+
+
+class PathInput(Input):
+    """Input de rutas: Tab acepta la sugerencia como en una shell."""
+
+    def accept_suggestion(self) -> bool:
+        if self.cursor_at_end and self._suggestion:
+            self.value = self._suggestion
+            self.cursor_position = len(self.value)
+            return True
+        return False
+
+
 class AddDownloadModal(ModalScreen[AddDownloadResult | None]):
     """Añade una descarga: nombre, carpeta y headers editables por descarga.
 
@@ -435,10 +490,11 @@ class AddDownloadModal(ModalScreen[AddDownloadResult | None]):
                 placeholder="Nombre del archivo (sin extensión)",
                 id="add-name",
             )
-            yield Input(
+            yield PathInput(
                 value=self._default_directory,
                 placeholder="Carpeta de destino",
                 id="add-folder",
+                suggester=PathSuggester(),
             )
             yield Label("Headers (opcional)", classes="field-label")
             with VerticalScroll(id="headers-fields"):
@@ -453,6 +509,14 @@ class AddDownloadModal(ModalScreen[AddDownloadResult | None]):
         for field in self.query(Input):
             field.cursor_blink = False
         self.query_one("#add-name", Input).focus()
+
+    def on_key(self, event: events.Key) -> None:
+        """Tab en una ruta con sugerencia la acepta (como una shell);
+        sin sugerencia, Tab sigue ciclando el foco como siempre."""
+        if event.key == "tab":
+            focused = self.focused
+            if isinstance(focused, PathInput) and focused.accept_suggestion():
+                event.stop()
 
     def apply_external_title(self, title: str) -> None:
         """Sobrescribe el nombre si el usuario aún no lo editó."""
