@@ -10,6 +10,7 @@ from pathlib import Path
 
 from rich.text import Text
 from textual import events
+from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, VerticalScroll
 from textual.reactive import reactive

@@ -89,6 +89,7 @@ class DownloadApp(App[None]):
         Binding("d", "discard", "Descartar"),
         Binding("enter", "details", "Detalles"),
         Binding("ctrl+t", "telegram_login", "Login TG"),
+        Binding("ctrl+r", "reload_config", "Recargar config"),
         Binding("j", "cursor_down", show=False),
         Binding("k", "cursor_up", show=False),
         Binding("escape", "focus_list", "Lista"),
@@ -215,6 +216,13 @@ class DownloadApp(App[None]):
                 self.notify("Sesión de Telegram iniciada.") if ok else None
             ),
         )
+
+    def action_reload_config(self) -> None:
+        backend = self._backend
+        if backend is None:
+            return
+        self._config = backend.reload_config()
+        self.notify("Configuración recargada desde el disco.")
 
     def _refresh_telegram_badge(self) -> None:
         backend = self._backend
@@ -436,6 +444,13 @@ class DownloadApp(App[None]):
             default_name = secrets.token_hex(4)
         else:
             default_name = _base_name(url)
+
+        # Config en caliente: se re-lee al abrir el modal, así un cambio
+        # en el archivo (directorio por defecto, cookies de yt-dlp) se
+        # aplica sin reiniciar la app.
+        backend = self._backend
+        if backend is not None:
+            self._config = backend.reload_config()
 
         # El modal se construye según el engine que resolvió la URL:
         # solo muestra los campos que le sirven (cookies en yt-dlp,

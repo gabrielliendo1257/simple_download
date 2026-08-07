@@ -53,7 +53,7 @@ class YtDlpEngine(Engine):
         self, source_provider: SourceProvider, cookies_from_browser: str | None = None
     ) -> None:
         self._source_provider = source_provider
-        self._cookies_from_browser = cookies_from_browser
+        self.cookies_from_browser = cookies_from_browser
         self._format_cache: dict[str, tuple[FieldOption, ...]] = {}
 
     def supports(self, url: str) -> bool:
@@ -88,7 +88,7 @@ class YtDlpEngine(Engine):
             resume=request.resume,
             headers=context.headers if context else None,
             cookies_path=context.cookies_path if context else None,
-            cookies_from_browser=self._cookies_from_browser,
+            cookies_from_browser=self.cookies_from_browser,
         )
         return SubprocessTaskAdapter(runner)
 
@@ -96,7 +96,7 @@ class YtDlpEngine(Engine):
         """Metadata con las cookies globales (x.com no da datos sin ellas)."""
         source = self._source_provider.get_source(ExecutableName.YT_DLP)
         return await source.metadata(
-            url, cookies_from_browser=self._cookies_from_browser
+            url, cookies_from_browser=self.cookies_from_browser
         )
 
     async def validate(self, url: str) -> None:

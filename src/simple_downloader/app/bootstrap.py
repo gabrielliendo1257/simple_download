@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from pathlib import Path
 
 from simple_downloader.app.manager import DownloadManager
 from simple_downloader.app.scheduler import DownloadScheduler
@@ -39,6 +40,21 @@ class Backend:
     engine_registry: EngineRegistry
     config: UserConfig
     telegram_provider: TelegramClientProvider | None = None
+    ytdlp_engine: YtDlpEngine | None = None
+    config_path: Path | None = None
+
+    def reload_config(self) -> UserConfig:
+        """Re-lee la config del disco y propaga los cambios en caliente.
+
+        Las opciones que dependen del arranque (credenciales de Telegram,
+        cliente HTTP) se aplican en el próximo inicio; lo re-lecturable es
+        lo que se consulta por uso: directorio del modal y cookies de
+        yt-dlp."""
+        fresh = load_user_config(self.config_path)
+        if self.ytdlp_engine is not None:
+            self.ytdlp_engine.cookies_from_browser = fresh.ytdlp.cookies_from_browser
+        self.config = fresh
+        return fresh
 
 
 async def build_backend() -> Backend:
@@ -72,12 +88,11 @@ async def build_backend() -> Backend:
         # en su loop dedicado cuando arranque la primera descarga.
         asyncio.create_task(_start_telegram(telegram_provider))
     engine_registry.register(TelegramEngine(client_provider=telegram_provider))
-    engine_registry.register(
-        YtDlpEngine(
-            source_provider=source_provider,
-            cookies_from_browser=config.ytdlp.cookies_from_browser,
-        )
+    ytdlp_engine = YtDlpEngine(
+        source_provider=source_provider,
+        cookies_from_browser=config.ytdlp.cookies_from_browser,
     )
+    engine_registry.register(ytdlp_engine)
 
     # Catálogo persistente: los jobs sobreviven al cierre de la app.
     job_repository = SqliteRepository(catalog_db_path())
@@ -101,6 +116,7 @@ async def build_backend() -> Backend:
         engine_registry=engine_registry,
         config=config,
         telegram_provider=telegram_provider,
+        ytdlp_engine=ytdlp_engine,
     )
 
 
