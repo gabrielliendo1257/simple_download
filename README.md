@@ -31,7 +31,24 @@ El proyecto se distribuye sin garantías (ver `LICENSE`).
 
 - Python >= 3.13
 - [uv](https://docs.astral.sh/uv/) (gestor del proyecto)
-- Binario `yt-dlp` en el `PATH` (se detecta al arrancar)
+- Binario `yt-dlp` en el `PATH` (se detecta al arrancar; la app muestra la versión detectada)
+
+### Versión probada de yt-dlp
+
+El proyecto se probó con **yt-dlp `2026.07.04`**. Como yt-dlp publica seguido
+y un cambio de binario puede romper la descarga de algún sitio, se recomienda
+fijar esa versión en vez de instalar la última:
+
+```bash
+# con uv (recomendado)
+uv tool install yt-dlp==2026.07.04
+
+# o con pip en un venv aparte
+python -m pip install "yt-dlp==2026.07.04"
+```
+
+Si instalás otra versión y algo falla, compará con la probada antes de
+reportar el bug.
 
 ## Instalación y uso
 
@@ -40,7 +57,8 @@ uv sync        # instala dependencias
 uv run simple-downloader
 ```
 
-> Si el binario `yt-dlp` no está instalado: `uv tool install yt-dlp` o tu gestor de paquetes.
+> Si el binario `yt-dlp` no está instalado: `uv tool install yt-dlp==2026.07.04`
+> (ver [versión probada](#versión-probada-de-yt-dlp)) o tu gestor de paquetes.
 
 ### Configuración
 
