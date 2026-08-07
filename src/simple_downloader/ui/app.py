@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import secrets
 import time
+from dataclasses import replace
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 from uuid import UUID
@@ -26,6 +27,7 @@ from simple_downloader.domain.models import (
     DownloadRequest,
     DownloadState,
 )
+from simple_downloader.domain.options import FieldOption, FieldKind, ModalField
 from simple_downloader.engines.telegram import (
     STATUS_AUTHENTICATED,
     STATUS_AUTH_REQUIRED,
@@ -47,6 +49,7 @@ from simple_downloader.ui.widgets import (
     DownloadStatus,
     StatsBar,
     TelegramLoginModal,
+    parse_headers,
 )
 
 _UI_TO_STATUS = {
@@ -347,7 +350,17 @@ class DownloadApp(App[None]):
                 self.notify(f"No se pudo resolver la URL: {exc}", severity="error")
                 return
 
-        self._open_add_modal(url, title)
+        options: dict[str, list[FieldOption]] = {}
+        engine = self._engine_for(url)
+        if engine is not None:
+            modal_options = getattr(engine, "modal_options", None)
+            if modal_options is not None:
+                try:
+                    options = await modal_options(url)
+                except Exception:
+                    options = {}  # sin opciones: el campo CHOICE no se muestra
+
+        self._open_add_modal(url, title, options)
 
     async def _resolve_title(self, url: str) -> str | None:
         """Estrategia 1: metadata. None = sin título conocido."""
@@ -412,7 +425,9 @@ class DownloadApp(App[None]):
             meta = await source.metadata(url)
         return _base_name(meta.title) if meta.title else None
 
-    def _open_add_modal(self, url: str, title: str | None) -> None:
+    def _open_add_modal(
+        self, url: str, title: str | None, options: dict[str, list[FieldOption]] | None = None
+    ) -> None:
         if title:
             default_name = title
         elif parse_link(url) is not None:
@@ -421,10 +436,32 @@ class DownloadApp(App[None]):
             default_name = secrets.token_hex(4)
         else:
             default_name = _base_name(url)
+
+        # El modal se construye según el engine que resolvió la URL:
+        # solo muestra los campos que le sirven (cookies en yt-dlp,
+        # segmentos en HLS, nada en Telegram...). Los campos CHOICE se
+        # completan en runtime con las opciones de la URL resuelta.
+        fields: list[ModalField] = []
+        engine = self._engine_for(url)
+        if engine is not None:
+            fields = [
+                spec
+                for spec in engine.modal_fields()
+                if spec.kind is not FieldKind.CHOICE
+                or (options or {}).get(spec.key)
+            ]
+            fields = [
+                replace(spec, options=tuple((options or {}).get(spec.key, [])))
+                if spec.kind is FieldKind.CHOICE
+                else spec
+                for spec in fields
+            ]
+
         modal = AddDownloadModal(
             url,
             default_name=default_name,
             directory=str(self._config.directory),
+            fields=fields,
         )
         self._add_modal = modal
         self.push_screen(
@@ -436,14 +473,13 @@ class DownloadApp(App[None]):
 
     async def _on_add_modal_closed(self, url: str, result: AddDownloadResult) -> None:
         self._add_modal = None
-        await self._add_job(url, result.output, result.headers, result.cookies_path)
+        await self._add_job(url, result.output, result.field_values)
 
     async def _add_job(
         self,
         url: str,
         output: DownloadOutput | None = None,
-        headers: dict[str, str] | None = None,
-        cookies_path: str | None = None,
+        field_values: dict[str, str] | None = None,
     ) -> None:
         assert self._manager is not None
         try:
@@ -452,17 +488,15 @@ class DownloadApp(App[None]):
                 if output is not None and output.filename
                 else _title_from_url(url)
             )
-            context = None
-            if headers or cookies_path:
-                context = DownloadContext(
-                    headers=headers or {}, cookies_path=cookies_path
-                )
+            context = context_from_fields(field_values)
+            format_id = format_id_from_fields(field_values)
             job = await self._manager.enqueue(
                 request=DownloadRequest(
                     url=url,
                     title=title,
                     output=output,
                     context=context,
+                    format_id=format_id,
                 )
             )
             self._jobs[str(job.id)] = job
@@ -542,7 +576,7 @@ class DownloadApp(App[None]):
             destination=destination,
             download_id=str(job.id),
             total_bytes=total or 0,
-            downloaded_bytes=downloaded,
+            downloaded_bytes=int(downloaded) or 0,
             speed_bps=speed or 0.0,
             segments_done=progress.segments_done if progress else None,
             segments_total=progress.segments_total if progress else None,
@@ -571,6 +605,45 @@ class DownloadApp(App[None]):
     def _toggle_empty(self) -> None:
         has_jobs = bool(self._items)
         self.query_one("#empty-state").display = not has_jobs
+
+
+def context_from_fields(values: dict[str, str] | None) -> DownloadContext | None:
+    """Traduce el vocabulario compartido del modal a DownloadContext.
+
+    Los engines declaran los campos que les sirven (`modal_fields`)
+    con keys de `domain/options`; este es el único lugar que traduce
+    esos valores a contexto de descarga. Lanza ValueError con mensaje
+    legible si un valor es inválido (ej. paralelismo no numérico).
+    """
+    if not values:
+        return None
+
+    parallel_raw = (values.get("max_parallel_segments") or "").strip()
+    parallel = 6
+    if parallel_raw:
+        if not parallel_raw.isdigit() or int(parallel_raw) < 1:
+            raise ValueError(
+                f"'segmentos en paralelo' debe ser un número ≥ 1 "
+                f"(recibí '{parallel_raw}')"
+            )
+        parallel = int(parallel_raw)
+
+    return DownloadContext(
+        headers=parse_headers(values.get("headers", "")),
+        cookies_path=values.get("cookies_path") or None,
+        user_agent=values.get("user_agent") or None,
+        max_parallel_segments=parallel,
+    )
+
+
+def format_id_from_fields(values: dict[str, str] | None) -> str | None:
+    """Extrae el formato elegido del modal (campo CHOICE de yt-dlp).
+
+    Va directo a `DownloadRequest.format_id` (no al contexto HTTP) y de
+    ahí a `-f <format_id>` en el subprocess de yt-dlp."""
+    if not values:
+        return None
+    return values.get("format_id") or None
 
 
 def _title_from_url(url: str) -> str:

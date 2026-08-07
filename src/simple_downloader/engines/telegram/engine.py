@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from simple_downloader.domain.models import DownloadRequest
+from simple_downloader.domain.options import FieldOption, ModalField
 from simple_downloader.domain.protocols import DownloadTask, Engine
 from simple_downloader.engines.common import resolve_output
 from simple_downloader.engines.telegram.client import TelegramClientProvider
@@ -24,6 +25,14 @@ class TelegramEngine(Engine):
 
     def supports(self, url: str) -> bool:
         return parse_link(url) is not None
+
+    def modal_fields(self) -> list[ModalField]:
+        # Telethon usa su propia sesión: ni cookies ni headers ni nada
+        # del contexto HTTP. Solo nombre + carpeta (los fijos del modal).
+        return []
+
+    async def modal_options(self, url: str) -> dict[str, list[FieldOption]]:
+        return {}
 
     async def create_task(self, request: DownloadRequest) -> DownloadTask:
         link = parse_link(request.url)
