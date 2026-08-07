@@ -1,7 +1,8 @@
 [project]
 name = "simple-downloader"
 version = "0.1.0"
-description = "Add your description here"
+description = "Gestor de descargas con interfaz TUI y engines por protocolo (HLS, HTTP, Telegram, yt-dlp)"
+license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [

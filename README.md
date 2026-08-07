@@ -19,6 +19,14 @@ Gestor de descargas con interfaz TUI (Terminal UI) construida con [Textual](http
 - **Persistencia de jobs**: catálogo SQLite (`SqliteRepository`) que guarda el historial de descargas.
 - **206 tests unitarios** con pytest.
 
+## Aviso legal
+
+Esta herramienta solo facilita la descarga de contenido sobre el cual tengas
+derechos o permiso explícito del titular (o que esté bajo una licencia que lo
+permita). No la uses para descargar material con derechos de autor sin
+autorización: es tu responsabilidad verificar la legalidad de cada descarga.
+El proyecto se distribuye sin garantías (ver `LICENSE`).
+
 ## Requisitos
 
 - Python >= 3.13
@@ -259,3 +267,8 @@ Cobertura de tests por módulo: parser (master/media/fMP4/init), crypt (AES-128 
   `HlsTask` (trackear segmentos completados y reanudar desde ahí).
 - **Frontend web** encima del adapter FastAPI (tablero de descargas).
 - **Búsqueda dentro de canales de Telegram** (no solo descarga por link).
+
+## Licencia
+
+MIT — ver [LICENSE](LICENSE). Dependencias: Textual y Telethon son MIT;
+yt-dlp se invoca como binario externo y mantiene su propia licencia.
