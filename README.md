@@ -6,16 +6,18 @@ Gestor de descargas con interfaz TUI (Terminal UI) construida con [Textual](http
 
 - **TUI completa**: cola de descargas con estados, progreso, velocidad, ETA, detalles, pausa/reanudar/cancelar/descartar.
 - **Engines por protocolo** (Strategy pattern):
-  - `hls` — playlists `.m3u8` (TS, fMP4, segmentos ofuscados en PNG, cifrado AES-128, referer automático).
-  - `http` — descarga directa con GET streaming (`.mp4`, `.mp3`, `.zip`, …), sin depender del extractor *generic* de yt-dlp.
+  - `hls` — playlists `.m3u8` (TS, fMP4, segmentos ofuscados en PNG, cifrado AES-128, referer automático, selector de variantes).
+  - `http` — descarga directa con GET streaming (`.mp4`, `.mp3`, `.zip`, …) y resume desde el parcial, sin depender del extractor *generic* de yt-dlp.
   - `telegram` — media de mensajes de Telegram con Telethon (un solo segmento: Telethon usa su propio pipe optimizado).
   - `yt-dlp` — catch-all con reintentos, paralelismo y resume ya resueltos por yt-dlp.
 - **Probe de formato**: se descarga el primer segmento y se *olfatea* (TS/fMP4/PNG-wrapped); `HlsTask` lo baja localmente con reintentos por segmento. Si el formato no se reconoce, falla con un error claro.
 - **Soporte fMP4**: `#EXT-X-MAP` (segmento de init) + fragmentos `.m4s`.
 - **Referer automático**: los sitios que exigen `Referer` del propio dominio funcionan sin configuración; se puede sobreescribir por request.
 - **Salida configurable**: nombre fijo, plantillas con placeholders (`{title}`, `{id}`, `{resolution}`, `{ext}`, `{date}`) y sobrescritura.
+- **Config en caliente**: se re-lee `config.json` al abrir el modal de descarga (directorio por defecto, cookies de yt-dlp) o con `Ctrl+R`, sin reiniciar la app.
 - **Machine states**: transiciones de estado validadas (`can_transition`), eventos sobre un `EventBus` desacoplado de la UI.
-- **109 tests unitarios** con pytest.
+- **Persistencia de jobs**: catálogo SQLite (`SqliteRepository`) que guarda el historial de descargas.
+- **206 tests unitarios** con pytest.
 
 ## Requisitos
 
@@ -32,6 +34,24 @@ uv run simple-downloader
 
 > Si el binario `yt-dlp` no está instalado: `uv tool install yt-dlp` o tu gestor de paquetes.
 
+### Configuración
+
+La app crea `~/.config/simple-downloader/config.json` con defaults al primer arranque:
+
+```json
+{
+  "directory": "downloads",
+  "telegram": {
+    "enabled": true,
+    "api_id": 0,
+    "api_hash": "",
+    "session_name": "simple_downloader"
+  }
+}
+```
+
+La sección `telegram` requiere `api_id`/`api_hash` (se obtienen en my.telegram.org). El directorio y las cookies de yt-dlp se pueden cambiar en caliente sin reiniciar.
+
 ### Atajos de la TUI
 
 | Tecla | Acción |
@@ -43,29 +63,34 @@ uv run simple-downloader
 | `d` | Descartar de la lista (completada/fallida/cancelada) |
 | `Enter` en la lista | Detalles de la descarga |
 | `j` / `k` | Navegar en la lista |
+| `Ctrl+T` | Login de Telegram (QR o manual) |
+| `Ctrl+R` | Recargar la configuración |
 | `q` | Salir |
 
-Al pegar una URL, se abre un modal para ajustar nombre, directorio y opciones de salida; el título real se rellena en segundo plano vía `yt-dlp --dump-single-json` si no lo editas antes.
+Al pegar una URL, se abre un modal para ajustar nombre, directorio y opciones de salida; el título real se rellena en segundo plano vía la metadata del engine (o `yt-dlp --dump-single-json` como fallback) si no lo editas antes.
 
 ## Arquitectura
 
 ```
 src/simple_downloader/
 ├── domain/           # modelos puros: DownloadRequest/Output/Context, estados, eventos
-│   ├── protocols.py  # Engine, DownloadTask, HttpClient (Protocols, sin implementación)
+│   ├── protocols.py  # Engine, DownloadTask, HttpClient, DownloadJobRepository (Protocols)
 │   ├── models.py     # dataclasses del dominio
 │   └── state.py      # máquina de estados con transiciones validadas
 ├── engines/
-│   ├── common.py     # origin()/http_with_context()/resolve_output()
+│   ├── common.py     # origin()/http_with_context()/resolve_output() + resume (.resume.json)
 │   ├── hls/          # engine HLS propio
 │   │   ├── parser.py # parse_master / parse_media_playlist (TS + fMP4/EXT-X-MAP)
 │   │   ├── fetch.py  # descarga de segmentos, AES-128, unwrap de PNG
 │   │   ├── probe.py  # sniff_segment/probe_segment: clasifica el primer segmento
 │   │   └── task.py   # HlsTask: descarga en paralelo, reintentos, escritura en orden
-│   ├── http/         # HttpEngine + HttpDownloadTask (GET streaming)
+│   ├── http/         # HttpEngine + HttpDownloadTask (GET streaming con resume)
+│   ├── telegram/     # TelegramEngine (Telethon): links, provider, task de 1 segmento
 │   └── ytdlp/        # adapter a yt-dlp como subprocess + progreso parseado
-├── app/              # DownloadManager (jobs), DownloadScheduler (workers asyncio)
-├── infra/            # AioHttpClient (get/get_range/stream), UserConfig
+├── app/              # DownloadManager (jobs), DownloadScheduler (workers asyncio),
+│   │                 # Backend (bootstrap): arma provider, engines y config
+├── db.py             # InMemoryRepository / SqliteRepository (jobs.db)
+├── infra/            # AioHttpClient (get/get_range/stream), UserConfig, QR ascii
 ├── ui/               # DownloadApp (Textual), widgets, styles.tcss
 ├── sources.py        # YtDlpSource: metadata/formats/download vía subprocess
 ├── executor.py       # detección y registro de ejecutables externos (yt-dlp)
@@ -86,7 +111,8 @@ EngineRegistry (orden de registro):
   1. HlsEngine   → supports: el path de la URL termina en .m3u8
   2. HttpEngine  → supports: extensión directa en el path (.mp4, .mp3, …)
                   o en un query param (remote_control.php?file=video.mp4)
-  3. YtDlpEngine → catch-all: soporta cualquier URL
+  3. TelegramEngine → supports: links t.me/tg:// que identifican un mensaje
+  4. YtDlpEngine → catch-all: soporta cualquier URL
 ```
 
 La comprobación de `.m3u8` se hace sobre el **path** (`urlsplit().path`), no sobre la URL completa: las playlists reales llevan query string (`master.m3u8?hash=…&expires=…&ip=…`) que rompería un simple `endswith`.
@@ -105,6 +131,14 @@ playlist .m3u8
 ```
 
 Todos los formatos se descargan con `HlsTask` (paralelo, escritura en orden, AES-128, referer, reintentos por segmento con backoff). Esto evita depender del binario `yt-dlp` para HLS; `yt-dlp` queda como catch-all para lo demás.
+
+### HLS: selector de variantes
+
+Si la master playlist tiene varias variantes, el modal de descarga ofrece un selector de resolución/bitrate (ordenado por bandwidth descendente, con etiqueta como `1080p · 2.6 Mbps`). La selección se traduce al `bandwidth` de la variante al resolver la playlist; por defecto se elige la de mayor bitrate.
+
+### Resume de HTTP
+
+`HttpDownloadTask` guarda un metadata `.resume.json` junto al parcial: al pausar/reiniciar, valida el archivo parcial contra la URL y continúa desde el tamaño actual (`Range: bytes=<offset>-`) en vez de reiniciar de cero. Si el servidor no responde rangos, vuelve a descargar desde el principio con aviso.
 
 ### Salida (`DownloadOutput`)
 
@@ -145,7 +179,7 @@ Links soportados (solo los que identifican un mensaje; las invitaciones
 ### Setup (una sola vez)
 
 1. Configura la sección `telegram` de `~/.config/simple-downloader/config.json`
-   (`api_id`/`api_hash` se obtienen en https://my.telegram.org):
+   (`api_id`/`api_hash` se obtienen en my.telegram.org):
    ```json
    {
      "telegram": {
@@ -156,11 +190,20 @@ Links soportados (solo los que identifican un mensaje; las invitaciones
      }
    }
    ```
-2. Inicia sesión (pide teléfono + código, guarda la sesión en
-   `~/.config/simple-downloader/`):
-   ```bash
-   uv run simple-downloader --telegram-login
-   ```
+2. Inicia sesión (dos formas equivalentes):
+   - Dentro de la TUI: `Ctrl+T` abre el modal de login (QR por defecto, o
+     modo manual con `[m]` para teléfono + código + 2FA — útil en Termux,
+     donde el QR se superpone con la app de Telegram).
+   - Por CLI (primer arranque):
+     ```bash
+     uv run simple-downloader --telegram-login
+     ```
+
+La sesión queda guardada en `~/.config/simple-downloader/simple_downloader.session`
+(en el directorio de config se crea automáticamente, incluso si no existe).
+La app se reconecta sola si la conexión MTProto se cae (p. ej. al dormir el
+teléfono); si el archivo de sesión se corrompe (Android matando el proceso),
+basta con borrarlo y volver a escanear el QR con `Ctrl+T`.
 
 Después solo pegas el link en la TUI como cualquier otra URL. El nombre que
 se muestra en la UI es el que reporta Telegram (metadatos del documento, que
@@ -172,7 +215,8 @@ se usa `telegram-<msg_id>.<ext>`.
 ```
 src/simple_downloader/engines/telegram/
 ├── links.py    # parse_link: t.me / telegram.me / tg://
-├── client.py   # TelegramClientProvider: sesión persistente, una sola conexión
+├── client.py   # TelegramClientProvider: sesión persistente, una sola conexión,
+│               # reconexión automática, login QR + manual (código y 2FA)
 ├── task.py     # TelegramDownloadTask: 1 segmento, progreso, pausa/resume desde el parcial
 └── engine.py   # TelegramEngine: resuelve el mensaje (metadatos) y descarga
 ```
@@ -183,20 +227,35 @@ Los tests usan un `FakeClient` (sin red ni credenciales).
 ## Tests
 
 ```bash
-uv run pytest            # 109 tests
+uv run pytest            # 206 tests
 uv run black src tests   # formateo
 ```
 
-Cobertura de tests por módulo: parser (master/media/fMP4/init), crypt (AES-128 + PKCS7), fetch, `HlsTask` (paralelo, orden, fallos), probe (sniff/TS/fMP4/PNG/Range/desconocido), `HttpEngine` (directo + wrapper en query), `TelegramEngine` (links t.me/tg://, resolución de mensaje, task 1-segmento), registry, output/context, estado del job, config.
+Cobertura de tests por módulo: parser (master/media/fMP4/init), crypt (AES-128 + PKCS7), fetch, `HlsTask` (paralelo, orden, fallos), probe (sniff/TS/fMP4/PNG/Range/desconocido), `HttpEngine` (directo + wrapper en query), resume HTTP, `TelegramEngine` (links t.me/tg://, resolución de mensaje, task 1-segmento, login QR/manual, reconexión), modal de login (cierre y flujo manual), registry, output/context, estado del job, recarga de config y persistencia.
 
 ## Estado del proyecto
 
 - [x] TUI conectada al backend (estados, progreso, ETA, pausa/resume/cancel)
-- [x] `HttpEngine` para descargas directas (path + query param)
-- [x] HLS propio: TS, AES-128, fMP4, PNG-wrap, referer, retries
+- [x] `HttpEngine` para descargas directas (path + query param) con resume
+- [x] HLS propio: TS, AES-128, fMP4, PNG-wrap, referer, retries, selector de variantes
 - [x] Probe de formato (TS/fMP4/PNG-wrapped/desconocido)
 - [x] Output con templates y referer configurable
 - [x] `TelegramEngine` (Telethon): links t.me/tg://, un solo segmento
-- [ ] Preview de metadata en la TUI (el `VideoMetadata` ya existe en `YtDlpSource.metadata()`)
-- [ ] Resume de descargas HTTP/HLS propias
-- [ ] Persistencia de jobs (`DownloadJobRepository` definido, sin implementación)
+- [x] Login de Telegram en la TUI: QR y manual (teléfono + código + 2FA)
+- [x] Config en caliente (directorio, cookies de yt-dlp) sin reiniciar
+- [x] Preview de metadata en el modal de descarga
+- [x] Persistencia de jobs (catálogo SQLite)
+- [ ] Resume de HLS propio (por ahora solo `HttpEngine`)
+- [ ] Tests de integración con red real
+
+## Visión de futuro
+
+- **Adapter de API con FastAPI**: exponer el mismo `DownloadManager`/`EventBus`
+  como servicio REST (encolar descargas, consultar estado/progreso, pausar,
+  cancelar), reutilizando los engines tal cual — la UI no conoce detalles de
+  los engines por diseño, así que una API HTTP sería solo otro consumidor del
+  `EventBus`.
+- **Resume de HLS**: aplicar el mecanismo de `.resume.json` de HTTP al
+  `HlsTask` (trackear segmentos completados y reanudar desde ahí).
+- **Frontend web** encima del adapter FastAPI (tablero de descargas).
+- **Búsqueda dentro de canales de Telegram** (no solo descarga por link).
