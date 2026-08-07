@@ -7,6 +7,7 @@ from typing import AsyncIterator, Sequence
 
 from simple_downloader.domain.models import DownloadProgress, DownloadResult
 
+from simple_downloader.engines.common import discard_partial
 from simple_downloader.engines.hls.fetch import SegmentFetcher
 from simple_downloader.engines.hls.models import Segment
 
@@ -153,4 +154,6 @@ class HlsTask:
                 pass
 
     async def cancel(self) -> None:
+        # Cancelar abandona la descarga: el parcial no se conserva.
         await self.pause()
+        discard_partial(self.out_file)

@@ -67,6 +67,7 @@ class Download:
     url: str | None = None
     engine: str | None = None
     destination: str | None = None
+    notice: str | None = None
 
     @property
     def progress(self) -> float:
@@ -163,7 +164,18 @@ class DownloadItem(ListItem):
         )
 
         line2 = self._meta_line(width, dl, marker)
-        return Text.assemble(line1, "\n", line2)
+
+        lines = [line1, line2]
+        if dl.notice:
+            notice = _elide(dl.notice, min(width - 5, 80))
+            lines.append(
+                Text.assemble(
+                    (f"{marker}   ", "dim"),
+                    ("⚠ ", f"bold {WARNING}"),
+                    (notice, WARNING),
+                )
+            )
+        return Text("\n").join(lines)
 
     def _meta_line(self, width: int, dl: Download, marker: str) -> Text:
         prefix = f"{marker}    "  # alinea con el título (col 5)
@@ -289,6 +301,10 @@ class DetailsModal(ModalScreen[None]):
         if dl.error_message:
             body.append(" Error      ", DIM)
             body.append(dl.error_message, ERROR)
+            body.append("\n")
+        if dl.notice:
+            body.append(" Aviso      ", DIM)
+            body.append(dl.notice, WARNING)
             body.append("\n")
         return body
 

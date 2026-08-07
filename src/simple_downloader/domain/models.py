@@ -95,3 +95,4 @@ class DownloadJob:
     progress: DownloadProgress | None = None
     engine: str | None = None
     error: str | None = None
+    notice: str | None = None

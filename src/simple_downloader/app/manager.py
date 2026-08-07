@@ -4,9 +4,13 @@ from dataclasses import replace
 from uuid import UUID, uuid4
 
 from simple_downloader.app.scheduler import DownloadScheduler
+from simple_downloader.db import InMemoryRepository
 from simple_downloader.domain.event import DownloadStateChangedEvent
 from simple_downloader.domain.models import DownloadJob, DownloadRequest, DownloadState
-from simple_downloader.domain.protocols import DownloadTask
+from simple_downloader.domain.protocols import (
+    DownloadJobRepository,
+    DownloadTask,
+)
 from simple_downloader.domain.state import can_transition
 from simple_downloader.engines import EngineRegistry
 from simple_downloader.errors import JobNotFoundError
@@ -20,11 +24,17 @@ class DownloadManager:
         event_bus: EventBus,
         engine_registry: EngineRegistry,
         download_scheduler: DownloadScheduler,
+        job_repository: DownloadJobRepository | None = None,
     ) -> None:
         self._jobs: dict[UUID, DownloadJob] = {}
         self._event_bus = event_bus
         self._engines = engine_registry
         self._scheduler = download_scheduler
+        self._job_repository = job_repository or InMemoryRepository()
+
+    @property
+    def job_repository(self) -> DownloadJobRepository:
+        return self._job_repository
 
     def list(self) -> list[DownloadJob]:
         return list(self._jobs.values())
@@ -42,6 +52,7 @@ class DownloadManager:
             state=DownloadState.QUEUED,
         )
         self._jobs[job.id] = job
+        await self._job_repository.save(job)
         await self._event_bus.publish(
             event=DownloadStateChangedEvent(job_id=job.id, state=job.state)
         )
@@ -65,6 +76,7 @@ class DownloadManager:
         """Actualiza el título visible del job (p. ej. metadatos del medio)."""
         job = self._require_job(job_id)
         job.request = replace(job.request, title=title)
+        await self._job_repository.save(job)
         await self._event_bus.publish(
             event=DownloadStateChangedEvent(job_id=job.id, state=job.state)
         )
@@ -78,6 +90,7 @@ class DownloadManager:
             await job.task.pause()
         if can_transition(job.state, DownloadState.PAUSED):
             job.state = DownloadState.PAUSED
+            await self._job_repository.save(job)
             await self._event_bus.publish(
                 event=DownloadStateChangedEvent(job_id=job.id, state=job.state)
             )
@@ -91,6 +104,7 @@ class DownloadManager:
             return
 
         job.request = replace(job.request, resume=True)
+        await self._job_repository.save(job)
         await self._start_task(job)
 
     async def cancel(
@@ -103,6 +117,7 @@ class DownloadManager:
             await job.task.cancel()
         if can_transition(job.state, DownloadState.CANCELLED):
             job.state = DownloadState.CANCELLED
+            await self._job_repository.save(job)
             await self._event_bus.publish(
                 event=DownloadStateChangedEvent(job_id=job.id, state=job.state)
             )
@@ -119,11 +134,27 @@ class DownloadManager:
                 job.error = (
                     describe_http_error(exc) or str(exc) or exc.__class__.__name__
                 )
+                await self._job_repository.save(job)
                 await self._event_bus.publish(
                     event=DownloadStateChangedEvent(job_id=job.id, state=job.state)
                 )
             return
+
+        await self._apply_resolved_title(job)
         await self._scheduler.submit(job=job)
+
+    async def _apply_resolved_title(self, job: DownloadJob) -> None:
+        """Si la tarea resolvió un título real (p. ej. el nombre del
+        documento que reporta Telegram), actualiza la UI, salvo que el
+        usuario haya elegido un nombre explícito."""
+        resolved = getattr(job.task, "title", None)
+        if not resolved or resolved == job.request.title:
+            return
+        user_named = (
+            job.request.output is not None and job.request.output.filename is not None
+        )
+        if not user_named:
+            await self.rename(job.id, resolved)
 
     async def _create_task(self, request: DownloadRequest) -> tuple[DownloadTask, str]:
         engine = self._engines.engine_for(request.url)

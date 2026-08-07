@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -69,6 +70,25 @@ class FakeEngine:
         return self._task
 
 
+class TitledTask(FakeTask):
+    """Tarea que resuelve un título real (p. ej. nombre de Telegram)."""
+
+    def __init__(self, title: str) -> None:
+        super().__init__()
+        self.title = title
+
+
+class FallbackTask(FakeTask):
+    """Tarea que terminó reanudándose desde cero (fallback de resume)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.resume_fallback = True
+        self.resume_fallback_reason = (
+            "el servidor ignoró el rango (HTTP 200); se reinició la descarga"
+        )
+
+
 class BrokenEngine:
     """Engine cuyo create_task falla en red (p. ej. HLS con 403)."""
 
@@ -106,6 +126,23 @@ def _build(
     return manager, scheduler, bus
 
 
+def _build_with_repo(
+    repo: object, task: FakeTask | None = None
+) -> tuple[DownloadManager, DownloadScheduler]:
+    bus = EventBus()
+    registry = EngineRegistry()
+    registry.register(FakeEngine(task))  # type: ignore[arg-type]
+    scheduler = DownloadScheduler(bus, max_workers=1, job_repository=repo)  # type: ignore[arg-type]
+    scheduler.start()
+    manager = DownloadManager(
+        event_bus=bus,
+        engine_registry=registry,
+        download_scheduler=scheduler,
+        job_repository=repo,  # type: ignore[arg-type]
+    )
+    return manager, scheduler
+
+
 async def test_enqueue_creates_queued_job() -> None:
     manager, scheduler, _bus = _build()
     job = await manager.enqueue(DownloadRequest(url="https://x/file.mp4"))
@@ -117,6 +154,37 @@ async def test_enqueue_creates_queued_job() -> None:
     await scheduler.finish()
 
 
+async def test_repository_persists_job_lifecycle() -> None:
+    from simple_downloader.db import InMemoryRepository
+
+    pause_flag = asyncio.Event()
+    repo = InMemoryRepository()
+    manager, scheduler = _build_with_repo(
+        repo, FakeTask(steps=10, pause_flag=pause_flag)
+    )
+
+    job = await manager.enqueue(DownloadRequest(url="https://x/file.mp4"))
+    assert await repo.find(job.id) is job
+    assert await repo.list() == [job]
+
+    await manager.start(job.id)
+    await asyncio.sleep(0.05)
+    await manager.pause(job.id)
+    assert job.state is DownloadState.PAUSED
+
+    persisted = await repo.find(job.id)
+    assert persisted is not None
+    assert persisted.state is DownloadState.PAUSED
+
+    pause_flag.set()
+    await asyncio.sleep(0.05)
+    await scheduler.finish()
+
+    persisted = await repo.find(job.id)
+    assert persisted is not None
+    assert persisted.state is DownloadState.COMPLETED
+
+
 async def test_start_completes_job() -> None:
     manager, scheduler, _bus = _build()
     job = await manager.enqueue(DownloadRequest(url="https://x/file.mp4"))
@@ -126,6 +194,50 @@ async def test_start_completes_job() -> None:
     await scheduler.finish()
 
     assert job.state is DownloadState.COMPLETED
+
+
+async def test_start_renames_job_with_resolved_task_title() -> None:
+    manager, scheduler, _bus = _build(engine=FakeEngine(TitledTask("mi_video.mp4")))
+    job = await manager.enqueue(DownloadRequest(url="https://t.me/canal/123"))
+
+    await manager.start(job.id)
+    await asyncio.sleep(0.05)
+    await scheduler.finish()
+
+    assert job.request.title == "mi_video.mp4"
+
+
+async def test_start_keeps_explicit_user_filename() -> None:
+    from simple_downloader.domain.models import DownloadOutput
+
+    manager, scheduler, _bus = _build(engine=FakeEngine(TitledTask("mi_video.mp4")))
+    job = await manager.enqueue(
+        DownloadRequest(
+            url="https://t.me/canal/123",
+            output=DownloadOutput(directory=Path("x"), filename="lo-que-elegi.mp4"),
+        )
+    )
+    assert job.request.title is None
+
+    await manager.start(job.id)
+    await asyncio.sleep(0.05)
+    await scheduler.finish()
+
+    assert job.request.title is None
+
+
+async def test_resume_fallback_sets_job_notice() -> None:
+    manager, scheduler, _bus = _build(engine=FakeEngine(FallbackTask()))
+    job = await manager.enqueue(DownloadRequest(url="https://x/file.mp4"))
+    assert job.notice is None
+
+    await manager.start(job.id)
+    await asyncio.sleep(0.05)
+    await scheduler.finish()
+
+    assert job.state is DownloadState.COMPLETED
+    assert job.notice is not None
+    assert "HTTP 200" in job.notice
 
 
 async def test_start_with_broken_engine_marks_failed_without_raising() -> None:

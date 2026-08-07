@@ -50,24 +50,53 @@ class AioHttpClient(HttpClient):
                 response.raise_for_status()
                 return await response.read()
 
-    async def stream(self, url: str):
-        """GET streaming: yield (total_bytes, chunk). total_bytes solo
-        en el primer item (de Content-Length)."""
-        # El timeout total prohibiría descargas largas: se aplica solo
-        # a la conexión y a cada chunk leído.
+    async def stream(
+        self,
+        url: str,
+        *,
+        offset: int = 0,
+        headers: dict[str, str] | None = None,
+    ):
+        """GET streaming: yield (status, total, chunk).
+
+        - status: HTTP real de la respuesta. Con `offset > 0`: 206 = el
+          servidor respetó el rango; 200 = lo ignoró (descarga desde 0,
+          el parcial hay que descartarlo); 416 = ya está completo.
+        - total: solo en el primer item (Content-Length / Content-Range).
+        - El timeout total se desactiva para no cortar descargas largas;
+          se aplica solo a la conexión y a cada chunk leído.
+        """
+        request_headers = {**(self._headers or {}), **(headers or {})}
+        if offset > 0:
+            request_headers["Range"] = f"bytes={offset}-"
         timeout = self._aiohttp.ClientTimeout(
             total=None, connect=self._timeout_sec, sock_read=self._timeout_sec
         )
         async with self._aiohttp.ClientSession(
-            headers=self._headers, timeout=timeout
+            headers=request_headers, timeout=timeout
         ) as session:
             async with session.get(url) as response:
+                if response.status == 416:
+                    # El rango pedido no es satisfacible: archivo completo.
+                    yield 416, _total_from_headers(response), b""
+                    return
                 response.raise_for_status()
-                length = response.headers.get("Content-Length")
-                total = int(length) if length is not None else None
-                yield total, b""
+                yield response.status, _total_from_headers(response), b""
                 async for chunk in response.content.iter_chunked(self._chunk_size):
-                    yield None, chunk
+                    yield None, None, chunk
+
+
+def _total_from_headers(response) -> int | None:
+    """Tamaño total del recurso: Content-Range (206) o Content-Length."""
+    content_range = response.headers.get("Content-Range")
+    if content_range:
+        total = content_range.rsplit("/", 1)[-1]
+        if total.isdigit():
+            return int(total)
+    length = response.headers.get("Content-Length")
+    if length is not None and length.isdigit():
+        return int(length)
+    return None
 
 
 def describe_http_error(exc: BaseException) -> str | None:

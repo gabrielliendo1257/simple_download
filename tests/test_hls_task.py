@@ -125,7 +125,7 @@ async def test_hls_task_segment_failure_propagates(tmp_path) -> None:
         await task.finalize()
 
 
-async def test_hls_task_cancel_stops_workers(tmp_path) -> None:
+async def test_hls_task_cancel_stops_workers_and_discards(tmp_path) -> None:
     out = tmp_path / "out.ts"
     task = HlsTask(
         out_file=out,
@@ -141,6 +141,8 @@ async def test_hls_task_cancel_stops_workers(tmp_path) -> None:
     await asyncio.sleep(0.05)
     await task.cancel()
     await asyncio.sleep(0.05)
+
+    assert not out.exists()  # cancelar abandona: sin basura en disco
 
 
 async def test_hls_task_pause_cancels_cleanly(tmp_path) -> None:

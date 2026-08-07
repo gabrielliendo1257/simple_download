@@ -9,6 +9,23 @@ _CONFIG_FILE = _CONFIG_DIR / "config.json"
 
 
 @dataclass(frozen=True)
+class TelegramConfig:
+    """Credenciales del cliente de Telegram (Telethon, cuenta de usuario).
+
+    La sesión se guarda en `~/.config/simple-downloader/<session_name>.session`
+    después del primer login (`simple-downloader --telegram-login`).
+    """
+
+    enabled: bool = False
+    api_id: int | None = None
+    api_hash: str | None = None
+    session_name: str = "simple_downloader"
+
+    def is_usable(self) -> bool:
+        return self.enabled and self.api_id is not None and self.api_hash is not None
+
+
+@dataclass(frozen=True)
 class UserConfig:
     """Preferencias de usuario leídas de `~/.config/simple-downloader/config.json`.
 
@@ -19,6 +36,7 @@ class UserConfig:
     directory: Path = Path("downloads")
     template: str | None = None
     overwrite: bool = False
+    telegram: TelegramConfig = TelegramConfig()
 
     @classmethod
     def defaults(cls) -> "UserConfig":
@@ -45,6 +63,7 @@ def load_user_config(path: Path | None = None) -> UserConfig:
         directory = Path(data.get("directory", "downloads")).expanduser()
         template = data.get("template")
         overwrite = bool(data.get("overwrite", False))
+        telegram = _parse_telegram(data.get("telegram"))
     except (TypeError, AttributeError):
         return UserConfig.defaults()
 
@@ -52,7 +71,30 @@ def load_user_config(path: Path | None = None) -> UserConfig:
         directory=directory,
         template=template if isinstance(template, str) else None,
         overwrite=overwrite,
+        telegram=telegram,
     )
+
+
+def _parse_telegram(raw: object) -> TelegramConfig:
+    if not isinstance(raw, dict):
+        return TelegramConfig()
+
+    try:
+        api_id = raw.get("api_id")
+        return TelegramConfig(
+            enabled=bool(raw.get("enabled", False)),
+            api_id=int(api_id) if api_id is not None else None,
+            api_hash=(
+                raw.get("api_hash") if isinstance(raw.get("api_hash"), str) else None
+            ),
+            session_name=(
+                raw.get("session_name")
+                if isinstance(raw.get("session_name"), str)
+                else "simple_downloader"
+            ),
+        )
+    except (TypeError, ValueError):
+        return TelegramConfig()
 
 
 def _write_defaults(path: Path) -> None:
@@ -64,6 +106,12 @@ def _write_defaults(path: Path) -> None:
                     "directory": "downloads",
                     "template": None,
                     "overwrite": False,
+                    "telegram": {
+                        "enabled": False,
+                        "api_id": None,
+                        "api_hash": None,
+                        "session_name": "simple_downloader",
+                    },
                 },
                 indent=2,
                 ensure_ascii=False,

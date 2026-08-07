@@ -25,7 +25,12 @@ _ALLOWED_TRANSITIONS: dict[DownloadState, frozenset[DownloadState]] = {
         }
     ),
     DownloadState.PAUSED: frozenset(
-        {DownloadState.RUNNING, DownloadState.CANCELLED, DownloadState.FAILED}
+        {
+            DownloadState.RUNNING,
+            DownloadState.COMPLETED,
+            DownloadState.CANCELLED,
+            DownloadState.FAILED,
+        }
     ),
     DownloadState.COMPLETED: frozenset(),
     DownloadState.FAILED: frozenset(),

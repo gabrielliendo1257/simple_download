@@ -1,11 +1,119 @@
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from simple_downloader.domain.models import DownloadContext, DownloadOutput
 from simple_downloader.domain.protocols import HttpClient
+
+_RESUME_META_SUFFIX = ".resume.json"
+
+
+@dataclass(frozen=True)
+class ResumePlan:
+    """Resultado de verificar el parcial en disco antes de reanudar.
+
+    - offset: bytes válidos desde los que continuar (0 = descarga nueva).
+    - valid: False si el parcial no corresponde y hay que reiniciar de cero.
+    - reason: por qué se descartó el parcial (para avisar al usuario).
+    """
+
+    offset: int
+    valid: bool = True
+    reason: str | None = None
+
+
+def _resume_meta_path(out_file: Path) -> Path:
+    return out_file.with_name(out_file.name + _RESUME_META_SUFFIX)
+
+
+def save_resume_meta(out_file: Path, *, url: str, total_bytes: int | None) -> None:
+    """Escribe el sidecar con los metadatos del parcial (URL y tamaño
+    esperado). Permite verificar que el parcial corresponde a esta
+    descarga al reanudar."""
+    meta = {"url": url, "total_bytes": total_bytes}
+    try:
+        _resume_meta_path(out_file).write_text(json.dumps(meta), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def clear_resume_meta(out_file: Path) -> None:
+    try:
+        _resume_meta_path(out_file).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def discard_partial(out_file: Path) -> None:
+    """Borra el parcial y su sidecar: el usuario canceló la descarga y
+    no hay que reanudarla ni dejar basura en disco."""
+    clear_resume_meta(out_file)
+    try:
+        out_file.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _load_resume_meta(out_file: Path) -> dict | None:
+    try:
+        raw = _resume_meta_path(out_file).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        meta = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(meta, dict):
+        return None
+    return meta
+
+
+def resume_plan(
+    out_file: Path,
+    *,
+    url: str | None = None,
+    expected_total: int | None = None,
+) -> ResumePlan:
+    """Verifica el parcial en disco y decide desde dónde continuar.
+
+    Reglas:
+    - sin archivo (o vacío) -> offset 0, descarga nueva.
+    - el sidecar apunta a otra URL -> parcial ajeno, reiniciar.
+    - tamaño == esperado -> ya completo.
+    - tamaño > esperado -> parcial corrupto, reiniciar.
+    - 0 < tamaño < esperado (o esperado desconocido) -> reanudar.
+    """
+    if not out_file.exists() or out_file.stat().st_size == 0:
+        return ResumePlan(offset=0)
+
+    written = out_file.stat().st_size
+
+    meta = _load_resume_meta(out_file)
+    if url is not None and meta is not None and meta.get("url") != url:
+        return ResumePlan(
+            offset=0,
+            valid=False,
+            reason="el parcial en disco pertenece a otra descarga",
+        )
+
+    if expected_total is not None:
+        if written == expected_total:
+            return ResumePlan(offset=written)
+        if written > expected_total:
+            return ResumePlan(
+                offset=0,
+                valid=False,
+                reason=(
+                    f"el parcial ({written} bytes) supera el tamaño "
+                    f"esperado ({expected_total})"
+                ),
+            )
+
+    return ResumePlan(offset=written)
 
 
 def origin(url: str) -> str:

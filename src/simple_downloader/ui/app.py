@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import secrets
 import time
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -11,6 +12,7 @@ from textual.binding import Binding
 from textual.containers import Container
 from textual.widgets import Footer, Header, Input, ListView, Static
 
+from simple_downloader.app.bootstrap import Backend, build_backend
 from simple_downloader.app.manager import DownloadManager
 from simple_downloader.app.scheduler import DownloadScheduler
 from simple_downloader.domain.event import (
@@ -24,20 +26,10 @@ from simple_downloader.domain.models import (
     DownloadRequest,
     DownloadState,
 )
-from simple_downloader.engines import EngineRegistry
-from simple_downloader.engines.hls import HlsEngine
-from simple_downloader.engines.http import HttpEngine
-from simple_downloader.engines.ytdlp import YtDlpEngine
+from simple_downloader.engines.telegram import TelegramLink, parse_link
 from simple_downloader.event import EventBus
-from simple_downloader.executor import (
-    ExecutableName,
-    ExecutableSpec,
-    ExecutorDetector,
-    ExecutorRegistry,
-)
-from simple_downloader.infra.config import UserConfig, load_user_config
-from simple_downloader.infra.http import AioHttpClient
-from simple_downloader.process import AsyncProcessExecutor
+from simple_downloader.executor import ExecutableName
+from simple_downloader.infra.config import UserConfig
 from simple_downloader.sources import SourceProvider
 from simple_downloader.ui.widgets import (
     AddDownloadModal,
@@ -94,6 +86,7 @@ class DownloadApp(App[None]):
 
     def __init__(self) -> None:
         super().__init__()
+        self._backend: Backend | None = None
         self._manager: DownloadManager | None = None
         self._scheduler: DownloadScheduler | None = None
         self._source_provider: SourceProvider | None = None
@@ -117,41 +110,16 @@ class DownloadApp(App[None]):
         yield Footer()
 
     async def on_mount(self) -> None:
-        bus = EventBus()
-        process_executor = AsyncProcessExecutor()
-        detector = ExecutorDetector(executor=process_executor)
+        backend = await build_backend()
 
-        executable = await detector.detect(
-            executable_spec=ExecutableSpec(name=ExecutableName.YT_DLP.value)
-        )
-        executor_registry = ExecutorRegistry()
-        executor_registry.register(executable=executable)
+        backend.event_bus.subscribe(DownloadStateChangedEvent, self._on_job_state)
+        backend.event_bus.subscribe(DownloadProgressEvent, self._on_progress)
 
-        source_provider = SourceProvider(
-            executor_registry=executor_registry,
-            process_executor=process_executor,
-        )
-
-        engine_registry = EngineRegistry()
-        engine_registry.register(HlsEngine(http=AioHttpClient()))
-        engine_registry.register(HttpEngine(http=AioHttpClient()))
-        engine_registry.register(YtDlpEngine(source_provider=source_provider))
-
-        scheduler = DownloadScheduler(event_bus=bus)
-        scheduler.start()
-        manager = DownloadManager(
-            event_bus=bus,
-            engine_registry=engine_registry,
-            download_scheduler=scheduler,
-        )
-
-        bus.subscribe(DownloadStateChangedEvent, self._on_job_state)
-        bus.subscribe(DownloadProgressEvent, self._on_progress)
-
-        self._manager = manager
-        self._scheduler = scheduler
-        self._source_provider = source_provider
-        self._config = load_user_config()
+        self._backend = backend
+        self._manager = backend.manager
+        self._scheduler = backend.scheduler
+        self._source_provider = backend.source_provider
+        self._config = backend.config
 
         # Cursor fijo sin parpadeo (tmux/terminales no refrescan el blink)
         self.query_one("#url-input", Input).cursor_blink = False
@@ -162,6 +130,11 @@ class DownloadApp(App[None]):
     async def on_exit(self) -> None:
         if self._scheduler is not None:
             await self._scheduler.finish()
+        telegram = (
+            self._backend.telegram_provider if self._backend is not None else None
+        )
+        if telegram is not None:
+            await telegram.disconnect()
 
     # ── observadores de eventos del backend ──────────────────────────────
     async def _on_job_state(self, event: DownloadStateChangedEvent) -> None:
@@ -287,9 +260,15 @@ class DownloadApp(App[None]):
     # ── helpers ──────────────────────────────────────────────────────────
 
     def _open_add_modal(self, url: str) -> None:
+        if parse_link(url) is not None:
+            # Telegram: nombre aleatorio de entrada; el real llega después
+            # por metadata (o se queda el aleatorio si no hay nombre).
+            default_name = secrets.token_hex(4)
+        else:
+            default_name = _base_name(url)
         modal = AddDownloadModal(
             url,
-            default_name=_base_name(url),
+            default_name=default_name,
             directory=str(self._config.directory),
         )
         self._add_modal = modal
@@ -310,6 +289,10 @@ class DownloadApp(App[None]):
         self, url: str, modal: AddDownloadModal
     ) -> None:
         """Título real en segundo plano; solo actualiza si el usuario no editó."""
+        link = parse_link(url)
+        if link is not None:
+            await self._fetch_telegram_name(link, modal)
+            return
         try:
             source = self._source_provider.get_source(ExecutableName.YT_DLP)
             meta = await source.metadata(url)
@@ -317,6 +300,23 @@ class DownloadApp(App[None]):
             return
         if meta.title and modal in self.screen_stack:
             modal.apply_external_title(_base_name(meta.title))
+
+    async def _fetch_telegram_name(
+        self, link: TelegramLink, modal: AddDownloadModal
+    ) -> None:
+        """El nombre que reporta Telegram (si lo da) se prellena en el modal;
+        si no, se mantiene el nombre aleatorio de entrada."""
+        if self._backend is None or self._backend.telegram_provider is None:
+            return
+        try:
+            message = await self._backend.telegram_provider.get_message(
+                link.peer, link.message_id
+            )
+            name = _telegram_media_name(message)
+        except Exception:
+            return
+        if name and modal in self.screen_stack:
+            modal.apply_external_title(name)
 
     async def _add_job(
         self,
@@ -422,6 +422,7 @@ class DownloadApp(App[None]):
             status=_UI_TO_STATUS[job.state],
             eta_sec=eta,
             error_message=job.error,
+            notice=job.notice,
         )
 
     def _refresh_stats(self) -> None:
@@ -457,6 +458,19 @@ def _base_name(url: str) -> str:
     if Path(name).suffix:
         return Path(name).stem
     return name
+
+
+def _telegram_media_name(message) -> str:
+    """Nombre del documento según Telegram, o un nombre aleatorio si no da
+    nombre (mantiene la extensión del media cuando Telethon la conoce)."""
+    if message is not None:
+        file = getattr(message, "file", None)
+        file_name = getattr(file, "name", None) if file is not None else None
+        if isinstance(file_name, str) and file_name:
+            return file_name
+    media_ext = getattr(file, "ext", "") if message is not None else ""
+    suffix = media_ext.lstrip(".") if isinstance(media_ext, str) and media_ext else ""
+    return secrets.token_hex(4) + (f".{suffix}" if suffix else "")
 
 
 def _elide(text: str, width: int) -> str:

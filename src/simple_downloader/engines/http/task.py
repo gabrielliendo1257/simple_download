@@ -7,6 +7,11 @@ from typing import AsyncIterator
 
 from simple_downloader.domain.models import DownloadProgress, DownloadResult
 from simple_downloader.domain.protocols import HttpClient
+from simple_downloader.engines.common import (
+    discard_partial,
+    resume_plan,
+    save_resume_meta,
+)
 
 
 @dataclass
@@ -23,6 +28,8 @@ class HttpDownloadTask:
         self._run_task: asyncio.Task[None] | None = None
         self._written: int = 0
         self._total: int | None = None
+        self.resume_fallback: bool = False
+        self.resume_fallback_reason: str | None = None
 
     def _start(self) -> asyncio.Task[None]:
         if not self._started:
@@ -37,14 +44,50 @@ class HttpDownloadTask:
         return self._run_task
 
     async def _run(self) -> None:
+        """Descarga (o reanuda) con Range. Si el servidor ignora el rango
+        (200), se reinicia desde cero y se avisa al usuario."""
+        plan = resume_plan(self.out_file, url=self.url)
+        if not plan.valid:
+            self.resume_fallback = True
+            self.resume_fallback_reason = f"{plan.reason}; se reinició la descarga"
+        offset = plan.offset if plan.valid else 0
+
+        stream = self.http.stream(self.url, offset=offset)
         try:
-            with open(self.out_file, "wb") as handle:
-                async for total, chunk in self.http.stream(self.url):
-                    if total is not None:
-                        self._total = total
+            status, total, _ = await anext(stream)
+            if total is not None:
+                self._total = total
+            save_resume_meta(self.out_file, url=self.url, total_bytes=self._total)
+
+            if status == 416:
+                # El servidor dice que el rango no aplica: ya está completo.
+                await stream.aclose()
+                self._written = self._total or 0
+                self._change.set()
+                return
+
+            if status == 206 and offset > 0:
+                mode = "ab"  # el servidor respetó el rango
+            else:
+                if status == 200 and offset > 0:
+                    # Sin soporte de Range: descartar el parcial y reiniciar.
+                    self.resume_fallback = True
+                    self.resume_fallback_reason = (
+                        "el servidor ignoró el rango (HTTP 200); "
+                        "se reinició la descarga"
+                    )
+                mode = "wb"
+                offset = 0
+
+            with open(self.out_file, mode) as handle:
+                written_here = 0
+                async for _status, _total, chunk in stream:
+                    if _total is not None:
+                        self._total = _total
                     if chunk:
                         handle.write(chunk)
-                        self._written += len(chunk)
+                        written_here += len(chunk)
+                        self._written = offset + written_here
                         self._change.set()
         finally:
             self._done.set()
@@ -84,4 +127,6 @@ class HttpDownloadTask:
                 pass
 
     async def cancel(self) -> None:
+        # Cancelar abandona la descarga: el parcial no se conserva.
         await self.pause()
+        discard_partial(self.out_file)
