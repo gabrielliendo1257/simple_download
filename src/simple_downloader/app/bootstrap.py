@@ -9,7 +9,11 @@ from simple_downloader.db import SqliteRepository
 from simple_downloader.engines import EngineRegistry
 from simple_downloader.engines.hls import HlsEngine
 from simple_downloader.engines.http import HttpEngine
-from simple_downloader.engines.telegram import TelegramClientProvider, TelegramEngine
+from simple_downloader.engines.telegram import (
+    TelegramClientProvider,
+    TelegramEngine,
+    TelegramNotAuthorizedError,
+)
 from simple_downloader.engines.ytdlp import YtDlpEngine
 from simple_downloader.event import EventBus
 from simple_downloader.executor import (
@@ -68,7 +72,12 @@ async def build_backend() -> Backend:
         # en su loop dedicado cuando arranque la primera descarga.
         asyncio.create_task(_start_telegram(telegram_provider))
     engine_registry.register(TelegramEngine(client_provider=telegram_provider))
-    engine_registry.register(YtDlpEngine(source_provider=source_provider))
+    engine_registry.register(
+        YtDlpEngine(
+            source_provider=source_provider,
+            cookies_from_browser=config.ytdlp.cookies_from_browser,
+        )
+    )
 
     # Catálogo persistente: los jobs sobreviven al cierre de la app.
     job_repository = SqliteRepository(catalog_db_path())
@@ -100,5 +109,7 @@ async def _start_telegram(telegram_provider) -> None:
     Telegram no debe imprimir tracebacks ni matar la app."""
     try:
         await telegram_provider.start()
+    except TelegramNotAuthorizedError:
+        pass  # sin sesión es un estado normal: la TUI muestra el badge
     except Exception as exc:
         print(f"aviso: Telegram no arrancó: {exc}")

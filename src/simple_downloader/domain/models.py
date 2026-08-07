@@ -40,6 +40,7 @@ class DownloadContext:
     headers: dict[str, str] = field(default_factory=dict)
     timeout_sec: float = 30.0
     max_parallel_segments: int = 6  # solo aplica a HLS
+    cookies_path: str | None = None  # cookies de yt-dlp (por descarga)
 
 
 @dataclass(frozen=True)

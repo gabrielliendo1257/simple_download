@@ -7,7 +7,7 @@ from simple_downloader.domain.models import DownloadOutput, DownloadRequest
 from simple_downloader.domain.protocols import DownloadTask, Engine
 from simple_downloader.engines.ytdlp.adapter import SubprocessTaskAdapter
 from simple_downloader.executor import ExecutableName
-from simple_downloader.sources import SourceProvider
+from simple_downloader.sources import SourceProvider, VideoMetadata
 
 _YTDLP_PLACEHOLDERS = {
     "{title}": "%(title)s",
@@ -45,23 +45,36 @@ class YtDlpEngine(Engine):
 
     name = "yt-dlp"
 
-    def __init__(self, source_provider: SourceProvider) -> None:
+    def __init__(
+        self, source_provider: SourceProvider, cookies_from_browser: str | None = None
+    ) -> None:
         self._source_provider = source_provider
+        self._cookies_from_browser = cookies_from_browser
 
     def supports(self, url: str) -> bool:
         return True
 
     async def create_task(self, request: DownloadRequest) -> DownloadTask:
         source = self._source_provider.get_source(ExecutableName.YT_DLP)
+        context = request.context
         runner = await source.download(
             url=request.url,
             output=ytdlp_output(request.output),
             format_id=request.format_id,
             extract_audio=request.extract_audio,
             resume=request.resume,
-            headers=request.context.headers if request.context else None,
+            headers=context.headers if context else None,
+            cookies_path=context.cookies_path if context else None,
+            cookies_from_browser=self._cookies_from_browser,
         )
         return SubprocessTaskAdapter(runner)
+
+    async def metadata(self, url: str) -> VideoMetadata:
+        """Metadata con las cookies globales (x.com no da datos sin ellas)."""
+        source = self._source_provider.get_source(ExecutableName.YT_DLP)
+        return await source.metadata(
+            url, cookies_from_browser=self._cookies_from_browser
+        )
 
     async def validate(self, url: str) -> None:
         # La metadata de yt-dlp ya validó la URL: si falló, se cae al

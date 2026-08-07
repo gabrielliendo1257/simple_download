@@ -11,7 +11,10 @@ from simple_downloader.engines.telegram import (
     parse_link,
 )
 from simple_downloader.engines.telegram.client import (
+    STATUS_AUTH_REQUIRED,
+    STATUS_AUTHENTICATED,
     TelegramClientProvider,
+    TelegramNotAuthorizedError,
     TelegramThrottledError,
 )
 from simple_downloader.engines.telegram.links import TelegramLink
@@ -49,6 +52,9 @@ class FakeClient:
         self.worker_loop = asyncio.get_running_loop()
         self.peer = peer
         return self.message
+
+    async def is_user_authorized(self):
+        return True
 
     async def iter_download(self, file, *, offset=0, **kwargs):
         for start in range(offset, len(self.DATA), 128):
@@ -428,6 +434,66 @@ async def test_provider_download_bridges_progress_back(tmp_path) -> None:
 
     assert (tmp_path / "out.mp4").read_bytes() == FakeClient.DATA
     assert progress[-1] == (len(FakeClient.DATA), len(FakeClient.DATA))
+    await provider.disconnect()
+
+
+class UnauthorizedClient(FakeClient):
+    async def is_user_authorized(self):
+        return False
+
+
+async def test_provider_raises_not_authorized_without_session() -> None:
+    provider = ThreadedFakeProvider(UnauthorizedClient(FakeMessage()))
+
+    with pytest.raises(TelegramNotAuthorizedError):
+        await provider.get_message("mi_canal", 1)
+    assert provider.status() == STATUS_AUTH_REQUIRED
+    await provider.disconnect()
+
+
+class FakeQR:
+    def __init__(self, url: str, *, scanned: bool = False) -> None:
+        self.url = url
+        self.scanned = scanned
+
+    async def wait(self, timeout: float = 0):
+        await asyncio.sleep(0)
+        return object() if self.scanned else None
+
+    async def recreate(self):
+        self.url = self.url + "2"
+
+
+class QRFakeClient(FakeClient):
+    def __init__(self, qr: FakeQR) -> None:
+        super().__init__(message=None)
+        self._qr = qr
+
+    async def qr_login(self):
+        return self._qr
+
+
+async def test_qr_login_flow_authenticates() -> None:
+    qr = FakeQR("https://t.me/login/abc", scanned=True)
+    provider = ThreadedFakeProvider(QRFakeClient(qr))
+
+    url = await provider.qr_begin()
+    assert url == "https://t.me/login/abc"
+
+    assert await provider.qr_wait(timeout=5) is True
+    assert provider.status() == STATUS_AUTHENTICATED
+    await provider.disconnect()
+
+
+async def test_qr_login_expired_then_refreshed() -> None:
+    qr = FakeQR("https://t.me/login/abc", scanned=False)
+    provider = ThreadedFakeProvider(QRFakeClient(qr))
+
+    await provider.qr_begin()
+    assert await provider.qr_wait(timeout=1) is False
+
+    url = await provider.qr_refresh()
+    assert url == "https://t.me/login/abc2"
     await provider.disconnect()
 
 

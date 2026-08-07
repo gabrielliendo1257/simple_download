@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 from collections.abc import Iterable
@@ -17,6 +18,7 @@ from textual.suggester import Suggester
 from textual.widgets import Button, Input, Label, ListItem, Static
 
 from simple_downloader.domain.models import DownloadOutput
+from simple_downloader.infra.qr import qr_ascii
 
 # ── Paleta semántica ──────────────────────────────────────────────────────
 # Azul → información, Verde → éxito, Amarillo → advertencia, Rojo → error,
@@ -88,6 +90,8 @@ class Download:
 
     @staticmethod
     def size_str(bytes_: int) -> str:
+        if bytes_ is None:
+            return "--"
         for unit in ("B", "KB", "MB", "GB", "TB"):
             if bytes_ < 1024:
                 return f"{bytes_:.1f} {unit}"
@@ -399,6 +403,77 @@ def _pairs_to_headers(pairs: Iterable[tuple[str, str]]) -> dict[str, str]:
 class AddDownloadResult:
     output: DownloadOutput | None
     headers: dict[str, str] | None
+    cookies_path: str | None = None
+
+
+class TelegramLoginModal(ModalScreen[bool]):
+    """Login de Telegram por QR en runtime.
+
+    Muestra el QR como ASCII y lo refresca cuando expira (~25s) hasta
+    que se escanea (vuelve `True`) o se cancela (`False`). La sesión
+    queda guardada: no hace falta volver a loguearse.
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancelar"),
+        Binding("c", "cancel", "Cancelar"),
+    ]
+
+    def __init__(self, provider) -> None:
+        super().__init__()
+        self._provider = provider
+        self._task: asyncio.Task | None = None
+
+    def compose(self) -> ComposeResult:
+        with Container(id="qr-card"):
+            yield Static(
+                Text.assemble(("🔐  Iniciar sesión en Telegram", "bold white")),
+                id="qr-title",
+            )
+            yield Static("", id="qr-code")
+            yield Static("", id="qr-hint")
+            yield Static("[esc] Cancelar", id="modal-hint")
+
+    def on_mount(self) -> None:
+        self._task = asyncio.create_task(self._run())
+
+    async def on_unmount(self) -> None:
+        if self._task is not None:
+            self._task.cancel()
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+    def _show_code(self, url: str) -> None:
+        self.query_one("#qr-code", Static).update(qr_ascii(url))
+        self.query_one("#qr-hint", Static).update(
+            Text("Escaneá el QR con la app de Telegram para iniciar sesión", DIM)
+        )
+
+    def _fail(self, message: str) -> None:
+        self.query_one("#qr-code", Static).update("")
+        self.query_one("#qr-title", Static).update(
+            Text.assemble(("✗  No se pudo iniciar sesión", "bold"), (f"\n{message}", ERROR))
+        )
+
+    async def _run(self) -> None:
+        try:
+            url = await self._provider.qr_begin()
+        except Exception as exc:
+            self._fail(str(exc))
+            return
+        self._show_code(url)
+        while True:
+            try:
+                ok = await self._provider.qr_wait(25)
+            except Exception as exc:
+                self._fail(str(exc))
+                return
+            if ok:
+                self.dismiss(True)
+                return
+            url = await self._provider.qr_refresh()
+            self._show_code(url)
 
 
 class PathSuggester(Suggester):
@@ -496,6 +571,12 @@ class AddDownloadModal(ModalScreen[AddDownloadResult | None]):
                 id="add-folder",
                 suggester=PathSuggester(),
             )
+            yield PathInput(
+                value="",
+                placeholder="Cookies de yt-dlp (.txt, opcional)",
+                id="add-cookies",
+                suggester=PathSuggester(),
+            )
             yield Label("Headers (opcional)", classes="field-label")
             with VerticalScroll(id="headers-fields"):
                 yield self._make_header_row(0)
@@ -538,6 +619,9 @@ class AddDownloadModal(ModalScreen[AddDownloadResult | None]):
             self.query_one("#add-folder", Input).focus()
             return
         if event.input.id == "add-folder":
+            self.query_one("#add-cookies", Input).focus()
+            return
+        if event.input.id == "add-cookies":
             self.query_one("#header-key-0", Input).focus()
             return
         index = self._row_index(event.input.id)
@@ -616,6 +700,7 @@ class AddDownloadModal(ModalScreen[AddDownloadResult | None]):
     def _confirm(self) -> None:
         name = self.query_one("#add-name", Input).value.strip()
         folder = self.query_one("#add-folder", Input).value.strip()
+        cookies = self.query_one("#add-cookies", Input).value.strip()
         headers = self._collect_headers()
         self.dismiss(
             AddDownloadResult(
@@ -624,5 +709,6 @@ class AddDownloadModal(ModalScreen[AddDownloadResult | None]):
                     filename=name or None,
                 ),
                 headers=headers or None,
+                cookies_path=cookies or None,
             )
         )

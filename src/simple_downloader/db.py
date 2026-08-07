@@ -118,6 +118,7 @@ def _encode(job: DownloadJob) -> str:
                     "headers": context.headers,
                     "timeout_sec": context.timeout_sec,
                     "max_parallel_segments": context.max_parallel_segments,
+                    "cookies_path": context.cookies_path,
                 }
                 if context is not None
                 else None
@@ -172,6 +173,7 @@ def _decode(raw: str) -> DownloadJob:
             headers=dict(context_data.get("headers") or {}),
             timeout_sec=float(context_data.get("timeout_sec", 30.0)),
             max_parallel_segments=int(context_data.get("max_parallel_segments", 6)),
+            cookies_path=context_data.get("cookies_path"),
         )
         if context_data is not None
         else None

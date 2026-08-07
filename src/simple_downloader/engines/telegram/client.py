@@ -28,6 +28,25 @@ class TelegramThrottledError(RuntimeError):
         )
 
 
+class TelegramNotAuthorizedError(RuntimeError):
+    """No hay sesión autorizada: el cliente conectó pero nadie escaneó el QR.
+
+    No es un error de config: la app debe ofrecer el login en runtime
+    (QR en la TUI) en lugar de pedir teléfono/código por stdin."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Telegram no está autenticado: apretá Ctrl+T para escanear el QR"
+        )
+
+
+STATUS_IDLE = "idle"  # nunca se intentó conectar
+STATUS_CONNECTING = "connecting"
+STATUS_AUTHENTICATED = "authenticated"
+STATUS_AUTH_REQUIRED = "auth_required"
+STATUS_ERROR = "error"
+
+
 class TelegramClientProvider:
     """Cliente Telethon aislado en su propio hilo y event loop.
 
@@ -40,10 +59,10 @@ class TelegramClientProvider:
     loop propio, y se exponen como corrutinas agnósticas al loop del
     llamante (bridge con `run_coroutine_threadsafe` + `wrap_future`).
 
-    La sesión se persiste en `~/.config/simple-downloader/<session>.session`:
-    el primer arranque pide teléfono + código de forma interactiva
-    (conviene hacerlo con `simple-downloader --telegram-login`); después
-    la sesión se reutiliza sin intervención.
+    La sesión se persiste en `~/.config/simple-downloader/<session>.session`.
+    Sin sesión no se pide teléfono/código por stdin (colgaría el hilo
+    worker): el cliente conecta y queda en estado "auth_required"; la TUI
+    ofrece el login por QR en runtime (`qr_begin`/`qr_wait`/`qr_refresh`).
     """
 
     def __init__(self, config: TelegramConfig | None = None) -> None:
@@ -53,6 +72,8 @@ class TelegramClientProvider:
         self._client: Any | None = None
         self._client_ready: asyncio.Future[Any] | None = None
         self._dl_slots: asyncio.Semaphore | None = None
+        self._qr: Any | None = None
+        self._status: str = STATUS_IDLE
 
     # ── hilo worker ─────────────────────────────────────────────────────
 
@@ -95,8 +116,20 @@ class TelegramClientProvider:
         esté establecida cuando arranque una descarga; el hilo se queda
         corriendo en su loop dedicado entre descargas. Si se lanza en
         background, la primera descarga espera a que termine de conectar.
+
+        Sin sesión no falla ni pide nada: conecta y queda en
+        `auth_required` (el login lo hace la TUI con el QR).
         """
-        return await self._ensure_client()
+        client = await self._ensure_connected()
+        return client
+
+    def status(self) -> str:
+        """Estado de autenticación (leído desde cualquier hilo/loop).
+
+        `idle`/`connecting` mientras conecta, `auth_required` sin sesión,
+        `authenticated` con sesión válida, `error` si algo falló.
+        """
+        return self._status
 
     async def get_message(self, peer: str | int, message_id: int) -> Any:
         client = await self._ensure_client()
@@ -211,14 +244,32 @@ class TelegramClientProvider:
     # ── conexión (corre en el worker loop) ──────────────────────────────
 
     async def _ensure_client(self) -> Any:
+        """Cliente conectado y autorizado (exige sesión válida)."""
+        client = await self._ensure_connected()
+        authorized = await self._submit(lambda: client.is_user_authorized())
+        if not authorized:
+            self._status = STATUS_AUTH_REQUIRED
+            raise TelegramNotAuthorizedError()
+        self._status = STATUS_AUTHENTICATED
+        return client
+
+    async def _ensure_connected(self) -> Any:
+        """Cliente conectado (sin exigir autorización: sirve para el QR)."""
         if self._client is None:
             if self._client_ready is None:
-                self._client_ready = asyncio.ensure_future(self._submit(self._connect))
-            self._client = await self._client_ready
+                self._client_ready = asyncio.ensure_future(
+                    self._submit(self._connect)
+                )
+            try:
+                self._client = await self._client_ready
+            except Exception:
+                self._client_ready = None  # permite reintentar la conexión
+                raise
         return self._client
 
     async def _connect(self) -> Any:
         if self._config is None or not self._config.is_usable():
+            self._status = STATUS_ERROR
             raise ValueError(
                 "telegram no está configurado: edita la sección telegram de "
                 "~/.config/simple-downloader/config.json (enabled, api_id, api_hash)"
@@ -238,8 +289,67 @@ class TelegramClientProvider:
             flood_sleep_threshold=0,
         )
         self._dl_slots = asyncio.Semaphore(_MAX_CONCURRENT_DOWNLOADS)
-        await client.start()
+        self._status = STATUS_CONNECTING
+        try:
+            await client.connect()
+        except Exception as exc:
+            self._status = STATUS_ERROR
+            raise
+        self._status = (
+            STATUS_AUTHENTICATED
+            if await client.is_user_authorized()
+            else STATUS_AUTH_REQUIRED
+        )
         return client
+
+    # ── login QR (estado: una sesión dura ~30s; recrear al expirar) ─────
+
+    async def qr_begin(self) -> str:
+        """Crea un QR de login en el worker y devuelve su URL.
+
+        Requiere que el cliente haya conectado (`start`); falla con el
+        mensaje de config si Telegram no está habilitado.
+        """
+        await self._ensure_connected()
+        return await self._submit(self._qr_create)
+
+    async def qr_wait(self, timeout: float = 25.0) -> bool:
+        """Espera (en el worker) a que escaneen el QR actual.
+
+        `True` si quedó autenticado (la sesión queda guardada para
+        siempre); `False` si expiró sin escanear (recrear con qr_refresh).
+        """
+        return await self._submit(lambda: self._qr_wait(timeout))
+
+    async def qr_refresh(self) -> str:
+        """Regenera el token del QR actual y devuelve su nueva URL."""
+        return await self._submit(self._qr_refresh)
+
+    async def _qr_create(self) -> str:
+        client = self._client  # corre en el worker
+        if client is None:
+            return ""
+        qr = await client.qr_login()
+        self._qr = qr
+        return qr.url
+
+    async def _qr_wait(self, timeout: float) -> bool:
+        qr = self._qr
+        if qr is None:
+            return False
+        user = await qr.wait(timeout=timeout)
+        if user is not None:
+            self._qr = None
+            self._status = STATUS_AUTHENTICATED
+            return True
+        return False
+
+    async def _qr_refresh(self) -> str:
+        qr = self._qr
+        if qr is None:
+            return ""
+        await qr.recreate()
+        return qr.url
 
 
 def _translate_throttle(exc: Exception) -> Exception:

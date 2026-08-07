@@ -31,6 +31,18 @@ class TelegramConfig:
 
 
 @dataclass(frozen=True)
+class YtDlpConfig:
+    """Opciones globales de yt-dlp (config, no por descarga).
+
+    `cookies_from_browser` lee las cookies de un navegador instalado
+    (`firefox`, `chrome`, `edge`...) sin exportarlas a un archivo; útil
+    para sitios que exigen sesión (x.com). None = sin cookies.
+    """
+
+    cookies_from_browser: str | None = None
+
+
+@dataclass(frozen=True)
 class UserConfig:
     """Preferencias de usuario leídas de `~/.config/simple-downloader/config.json`.
 
@@ -42,6 +54,7 @@ class UserConfig:
     template: str | None = None
     overwrite: bool = False
     telegram: TelegramConfig = TelegramConfig()
+    ytdlp: YtDlpConfig = YtDlpConfig()
 
     @classmethod
     def defaults(cls) -> "UserConfig":
@@ -69,6 +82,7 @@ def load_user_config(path: Path | None = None) -> UserConfig:
         template = data.get("template")
         overwrite = bool(data.get("overwrite", False))
         telegram = _parse_telegram(data.get("telegram"))
+        ytdlp = _parse_ytdlp(data.get("ytdlp"))
     except (TypeError, AttributeError):
         return UserConfig.defaults()
 
@@ -77,7 +91,26 @@ def load_user_config(path: Path | None = None) -> UserConfig:
         template=template if isinstance(template, str) else None,
         overwrite=overwrite,
         telegram=telegram,
+        ytdlp=ytdlp,
     )
+
+
+# Navegadores soportados por `--cookies-from-browser` de yt-dlp.
+_BROWSERS = frozenset(
+    {"brave", "chrome", "chromium", "edge", "firefox", "opera", "safari", "vivaldi"}
+)
+
+
+def _parse_ytdlp(raw: object) -> YtDlpConfig:
+    if not isinstance(raw, dict):
+        return YtDlpConfig()
+    browser = raw.get("cookies_from_browser")
+    if not isinstance(browser, str):
+        return YtDlpConfig()
+    browser = browser.strip().lower()
+    if browser not in _BROWSERS:
+        return YtDlpConfig()
+    return YtDlpConfig(cookies_from_browser=browser)
 
 
 def _parse_telegram(raw: object) -> TelegramConfig:
@@ -116,6 +149,9 @@ def _write_defaults(path: Path) -> None:
                         "api_id": None,
                         "api_hash": None,
                         "session_name": "simple_downloader",
+                    },
+                    "ytdlp": {
+                        "cookies_from_browser": None,
                     },
                 },
                 indent=2,

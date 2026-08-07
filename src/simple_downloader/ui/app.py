@@ -26,7 +26,13 @@ from simple_downloader.domain.models import (
     DownloadRequest,
     DownloadState,
 )
-from simple_downloader.engines.telegram import TelegramLink, parse_link
+from simple_downloader.engines.telegram import (
+    STATUS_AUTHENTICATED,
+    STATUS_AUTH_REQUIRED,
+    TelegramLink,
+    TelegramNotAuthorizedError,
+    parse_link,
+)
 from simple_downloader.event import EventBus
 from simple_downloader.executor import ExecutableName
 from simple_downloader.infra.config import UserConfig
@@ -40,6 +46,7 @@ from simple_downloader.ui.widgets import (
     DownloadItem,
     DownloadStatus,
     StatsBar,
+    TelegramLoginModal,
 )
 
 _UI_TO_STATUS = {
@@ -78,6 +85,7 @@ class DownloadApp(App[None]):
         Binding("x", "cancel", "Cancelar"),
         Binding("d", "discard", "Descartar"),
         Binding("enter", "details", "Detalles"),
+        Binding("ctrl+t", "telegram_login", "Login TG"),
         Binding("j", "cursor_down", show=False),
         Binding("k", "cursor_up", show=False),
         Binding("escape", "focus_list", "Lista"),
@@ -127,6 +135,7 @@ class DownloadApp(App[None]):
         self.query_one("#url-input", Input).focus()
         self._refresh_stats()
         self._toggle_empty()
+        self.set_interval(2.0, self._refresh_telegram_badge)
 
     async def _seed_jobs(self) -> None:
         """Jobs del catálogo persistido (SQLite) visibles desde el arranque."""
@@ -185,6 +194,39 @@ class DownloadApp(App[None]):
 
     def action_focus_list(self) -> None:
         self.query_one("#download-list", ListView).focus()
+
+    def action_telegram_login(self) -> None:
+        backend = self._backend
+        if backend is None or backend.telegram_provider is None:
+            return
+        if not backend.config.telegram.is_usable():
+            self.notify(
+                "Telegram no está configurado: edita la sección telegram de "
+                "~/.config/simple-downloader/config.json",
+                severity="warning",
+            )
+            return
+        self.push_screen(
+            TelegramLoginModal(backend.telegram_provider),
+            callback=lambda ok: (
+                self.notify("Sesión de Telegram iniciada.") if ok else None
+            ),
+        )
+
+    def _refresh_telegram_badge(self) -> None:
+        backend = self._backend
+        provider = backend.telegram_provider if backend is not None else None
+        if provider is None:
+            return
+        if provider.status() == STATUS_AUTHENTICATED:
+            badge = "TG: ✓"
+        elif provider.status() == STATUS_AUTH_REQUIRED:
+            badge = "TG: ⚠ Ctrl+T"
+        else:
+            badge = None
+        self.sub_title = (
+            f"gestor de descargas  ·  {badge}" if badge else "gestor de descargas"
+        )
 
     async def action_pause(self) -> None:
         job = self._selected_job()
@@ -350,14 +392,24 @@ class DownloadApp(App[None]):
         )
         if provider is None:
             raise RuntimeError("Telegram no está configurado")
-        message = await provider.get_message(link.peer, link.message_id)
+        try:
+            message = await provider.get_message(link.peer, link.message_id)
+        except TelegramNotAuthorizedError:
+            raise ValueError(
+                "Telegram no está autenticado: Ctrl+T para escanear el QR"
+            ) from None
         if message is None or getattr(message, "file", None) is None:
             raise ValueError(f"el mensaje {link.message_id} no tiene media")
         return _telegram_media_name(message) or None
 
     async def _resolve_web_title(self, url: str) -> str | None:
-        source = self._source_provider.get_source(ExecutableName.YT_DLP)
-        meta = await source.metadata(url)
+        engine = self._engine_for(url)
+        metadata = getattr(engine, "metadata", None)
+        if metadata is not None:
+            meta = await metadata(url)
+        else:
+            source = self._source_provider.get_source(ExecutableName.YT_DLP)
+            meta = await source.metadata(url)
         return _base_name(meta.title) if meta.title else None
 
     def _open_add_modal(self, url: str, title: str | None) -> None:
@@ -384,13 +436,14 @@ class DownloadApp(App[None]):
 
     async def _on_add_modal_closed(self, url: str, result: AddDownloadResult) -> None:
         self._add_modal = None
-        await self._add_job(url, result.output, result.headers)
+        await self._add_job(url, result.output, result.headers, result.cookies_path)
 
     async def _add_job(
         self,
         url: str,
         output: DownloadOutput | None = None,
         headers: dict[str, str] | None = None,
+        cookies_path: str | None = None,
     ) -> None:
         assert self._manager is not None
         try:
@@ -399,7 +452,11 @@ class DownloadApp(App[None]):
                 if output is not None and output.filename
                 else _title_from_url(url)
             )
-            context = DownloadContext(headers=headers) if headers else None
+            context = None
+            if headers or cookies_path:
+                context = DownloadContext(
+                    headers=headers or {}, cookies_path=cookies_path
+                )
             job = await self._manager.enqueue(
                 request=DownloadRequest(
                     url=url,

@@ -55,3 +55,36 @@ def test_wrong_types_fall_back_to_defaults(tmp_path: Path) -> None:
     path.write_text(json.dumps({"directory": 42, "template": 7}), encoding="utf-8")
 
     assert load_user_config(path) == UserConfig.defaults()
+
+
+def test_ytdlp_cookies_from_browser_parsed(tmp_path: Path) -> None:
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps({"ytdlp": {"cookies_from_browser": "Firefox"}}),
+        encoding="utf-8",
+    )
+
+    config = load_user_config(path)
+
+    assert config.ytdlp.cookies_from_browser == "firefox"
+
+
+def test_ytdlp_cookies_from_browser_rejects_unknown_browser(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps({"ytdlp": {"cookies_from_browser": "netscape"}}),
+        encoding="utf-8",
+    )
+
+    config = load_user_config(path)
+
+    assert config.ytdlp.cookies_from_browser is None
+
+
+def test_ytdlp_cookies_defaults_when_absent(tmp_path: Path) -> None:
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({}), encoding="utf-8")
+
+    assert load_user_config(path).ytdlp == UserConfig.defaults().ytdlp

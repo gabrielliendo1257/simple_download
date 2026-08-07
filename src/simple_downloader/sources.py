@@ -61,7 +61,9 @@ class Source(Protocol):
     _executable: Executable
     _executor: ProcessExecutor
 
-    async def metadata(self, url: str) -> VideoMetadata: ...
+    async def metadata(
+        self, url: str, cookies_from_browser: str | None = None
+    ) -> VideoMetadata: ...
 
     async def formats(self, url: str) -> dict: ...
 
@@ -73,6 +75,8 @@ class Source(Protocol):
         format_id: str | None = None,
         resume: bool = False,
         headers: dict[str, str] | None = None,
+        cookies_path: str | None = None,
+        cookies_from_browser: str | None = None,
     ) -> RunningProcess: ...
 
 
@@ -82,8 +86,12 @@ class YtDlpSource(Source):
         self._executable = executable
         self._executor = executor
 
-    async def metadata(self, url: str) -> VideoMetadata:
+    async def metadata(
+        self, url: str, cookies_from_browser: str | None = None
+    ) -> VideoMetadata:
         args = ["--dump-single-json", "--no-playlist"]
+        if cookies_from_browser:
+            args.extend(["--cookies-from-browser", cookies_from_browser])
         args.append(url)
 
         request = ProcessRequest(executable=self._executable.path, args=args)
@@ -136,6 +144,8 @@ class YtDlpSource(Source):
         format_id: str | None = None,
         resume: bool = False,
         headers: dict[str, str] | None = None,
+        cookies_path: str | None = None,
+        cookies_from_browser: str | None = None,
     ) -> RunningProcess:
         args = ["--newline"]
         args.extend(
@@ -149,6 +159,11 @@ class YtDlpSource(Source):
         if headers:
             for key, value in headers.items():
                 args.extend(["--add-header", f"{key}: {value}"])
+
+        if cookies_path:
+            args.extend(["--cookies", cookies_path])
+        if cookies_from_browser:
+            args.extend(["--cookies-from-browser", cookies_from_browser])
 
         if resume:
             args.append("-c")

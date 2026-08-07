@@ -204,6 +204,29 @@ AddDownloadModal {
     color: #e6edf3;
 }
 
+#qr-card {
+    width: 60;
+    max-width: 90%;
+    height: auto;
+    background: #161b22;
+    border: tall #30363d;
+    padding: 1 2;
+    align: center middle;
+}
+#qr-title {
+    text-style: bold;
+    margin-bottom: 1;
+    text-align: center;
+}
+#qr-code {
+    margin: 1 0;
+    text-align: center;
+}
+#qr-hint {
+    color: #e6edf3;
+    text-align: center;
+}
+
 #modal-hint {
     color: #6e7681;
     margin-top: 1;

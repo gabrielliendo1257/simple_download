@@ -23,6 +23,7 @@ def _job() -> DownloadJob:
                 referer="https://x/",
                 user_agent="test-agent",
                 headers={"cookie": "a=1"},
+                cookies_path="/tmp/cookies.txt",
             ),
             format_id="720",
             extract_audio=True,

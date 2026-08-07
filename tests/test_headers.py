@@ -100,3 +100,41 @@ def test_ytdlp_download_without_headers_omits_flag() -> None:
     asyncio.run(source.download("https://x/video"))
 
     assert "--add-header" not in (executor.args or [])
+
+
+def test_ytdlp_download_adds_cookies_path() -> None:
+    source, executor = _source()
+
+    import asyncio
+
+    asyncio.run(source.download("https://x/video", cookies_path="/tmp/cookies.txt"))
+
+    args = executor.args or []
+    assert "--cookies" in args
+    assert args[args.index("--cookies") + 1] == "/tmp/cookies.txt"
+
+
+def test_ytdlp_download_adds_cookies_from_browser() -> None:
+    source, executor = _source()
+
+    import asyncio
+
+    asyncio.run(
+        source.download("https://x/video", cookies_from_browser="firefox")
+    )
+
+    args = executor.args or []
+    assert "--cookies-from-browser" in args
+    assert args[args.index("--cookies-from-browser") + 1] == "firefox"
+
+
+def test_ytdlp_download_omits_cookie_flags_when_absent() -> None:
+    source, executor = _source()
+
+    import asyncio
+
+    asyncio.run(source.download("https://x/video"))
+
+    args = executor.args or []
+    assert "--cookies" not in args
+    assert "--cookies-from-browser" not in args
