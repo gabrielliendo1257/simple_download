@@ -157,7 +157,134 @@ def test_hls_modal_fields_includes_parallel_segments() -> None:
         "headers",
         "user_agent",
         "max_parallel_segments",
+        "format_id",
     ]
+
+
+def test_hls_modal_options_lists_variants_sorted_by_bandwidth() -> None:
+    import asyncio
+
+    from simple_downloader.engines.hls import HlsEngine
+
+    master = (
+        "#EXTM3U\n"
+        "#EXT-X-STREAM-INF:BANDWIDTH=2646412,RESOLUTION=1920x1080\nv1080.m3u8\n"
+        "#EXT-X-STREAM-INF:BANDWIDTH=128000\naudio.m3u8\n"
+        "#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=1280x720\nv720.m3u8\n"
+    )
+
+    class MasterClient:
+        async def get(self, url: str) -> bytes:
+            return master.encode()
+
+    engine = HlsEngine(MasterClient())
+
+    options = asyncio.run(engine.modal_options("https://x/master.m3u8"))["format_id"]
+
+    assert [option.value for option in options] == ["2646412", "800000", "128000"]
+    assert [option.label for option in options] == [
+        "1080p · 2.6 Mbps",
+        "720p · 800 kbps",
+        "Vídeo · 128 kbps",
+    ]
+
+
+def test_hls_modal_options_cached_single_fetch() -> None:
+    import asyncio
+
+    from simple_downloader.engines.hls import HlsEngine
+
+    calls = []
+
+    class MasterClient:
+        async def get(self, url: str) -> bytes:
+            calls.append(url)
+            return b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nv1.m3u8\n"
+
+    engine = HlsEngine(MasterClient())
+
+    first = asyncio.run(engine.modal_options("https://x/master.m3u8"))
+    second = asyncio.run(engine.modal_options("https://x/master.m3u8"))
+
+    assert first == second
+    assert calls == ["https://x/master.m3u8"]
+
+
+def test_hls_modal_options_empty_for_media_playlist() -> None:
+    import asyncio
+
+    from simple_downloader.engines.hls import HlsEngine
+
+    class MediaClient:
+        async def get(self, url: str) -> bytes:
+            return b"#EXTM3U\n#EXTINF:4.0,\nseg0.ts\n#EXT-X-ENDLIST\n"
+
+    engine = HlsEngine(MediaClient())
+
+    assert asyncio.run(engine.modal_options("https://x/media.m3u8")) == {}
+
+
+def test_hls_create_task_uses_selected_variant() -> None:
+    import asyncio
+
+    from simple_downloader.engines.hls import HlsEngine
+
+    fetched: list[str] = []
+    master = (
+        "#EXTM3U\n"
+        "#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1920x1080\nv1080.m3u8\n"
+        "#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1280x720\nv720.m3u8\n"
+    )
+    media = "#EXTM3U\n#EXTINF:4.0,\nseg0.ts\n#EXT-X-ENDLIST\n"
+
+    class MasterClient:
+        async def get(self, url: str) -> bytes:
+            fetched.append(url)
+            if url.endswith("master.m3u8"):
+                return master.encode()
+            if url.endswith("v720.m3u8") or url.endswith("v1080.m3u8"):
+                return media.encode()
+            return bytes([0x47]) * 377  # probe: TS estándar
+
+    engine = HlsEngine(MasterClient())
+
+    # 720p = 1000000 bps, a pesar de existir la 1080p (mejor).
+    request = DownloadRequest(url="https://x/master.m3u8", format_id="1000000")
+    task = asyncio.run(engine.create_task(request))
+
+    assert task is not None
+    assert fetched[1].endswith("v720.m3u8"), fetched
+
+
+def test_hls_create_task_falls_back_to_best_when_format_id_unknown() -> None:
+    import asyncio
+
+    from simple_downloader.engines.hls import HlsEngine
+
+    fetched: list[str] = []
+    master = (
+        "#EXTM3U\n"
+        "#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1920x1080\nv1080.m3u8\n"
+        "#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1280x720\nv720.m3u8\n"
+    )
+    media = "#EXTM3U\n#EXTINF:4.0,\nseg0.ts\n#EXT-X-ENDLIST\n"
+
+    class MasterClient:
+        async def get(self, url: str) -> bytes:
+            fetched.append(url)
+            if url.endswith("master.m3u8"):
+                return master.encode()
+            if url.endswith("v720.m3u8") or url.endswith("v1080.m3u8"):
+                return media.encode()
+            return bytes([0x47]) * 377
+
+    engine = HlsEngine(MasterClient())
+
+    request = DownloadRequest(url="https://x/master.m3u8", format_id="999")
+    task = asyncio.run(engine.create_task(request))
+
+    assert task is not None
+    assert fetched[1].endswith("v1080.m3u8"), fetched
 
 
 def test_ytdlp_modal_fields_includes_cookies() -> None:
