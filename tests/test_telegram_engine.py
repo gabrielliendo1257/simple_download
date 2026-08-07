@@ -14,6 +14,7 @@ from simple_downloader.engines.telegram.client import (
     STATUS_AUTH_REQUIRED,
     STATUS_AUTHENTICATED,
     TelegramClientProvider,
+    TelegramLoginNeedsPasswordError,
     TelegramNotAuthorizedError,
     TelegramThrottledError,
 )
@@ -696,3 +697,80 @@ def test_session_path_creates_parent_directory(tmp_path, monkeypatch) -> None:
 
     assert path == session_dir / "mi_sesion.session"
     assert path.parent.is_dir()
+
+
+class ManualLoginClient(FakeClient):
+    def __init__(self, *, needs_password: bool = False) -> None:
+        super().__init__()
+        self.needs_password = needs_password
+        self.code_requests: list[str] = []
+        self.signed_in_with: list[tuple[str, str]] = []
+        self.passwords: list[str] = []
+
+    def is_connected(self) -> bool:
+        return True
+
+    async def send_code_request(self, phone: str) -> None:
+        self.code_requests.append(phone)
+
+    async def sign_in(self, **kwargs):
+        password = kwargs.get("password")
+        if password is not None:
+            self.passwords.append(password)
+            return object()
+        self.signed_in_with.append((kwargs.get("phone", ""), kwargs.get("code", "")))
+        if self.needs_password:
+            from telethon.errors.rpcerrorlist import SessionPasswordNeededError
+
+            raise SessionPasswordNeededError(request=None)
+        return object()
+
+
+async def test_provider_send_code_request_bridges_to_worker() -> None:
+    client = ManualLoginClient()
+    provider = ThreadedFakeProvider(client)
+    provider._client = client
+
+    await provider.send_code_request("+5491100000000")
+
+    assert client.code_requests == ["+5491100000000"]
+    await provider.disconnect()
+
+
+async def test_provider_sign_in_sets_authenticated() -> None:
+    client = ManualLoginClient()
+    provider = ThreadedFakeProvider(client)
+    provider._client = client
+
+    await provider.sign_in("+54911", "12345")
+
+    assert client.signed_in_with == [("+54911", "12345")]
+    assert provider.status() == STATUS_AUTHENTICATED
+    await provider.disconnect()
+
+
+async def test_provider_sign_in_2fa_raises_needs_password() -> None:
+    client = ManualLoginClient(needs_password=True)
+    provider = ThreadedFakeProvider(client)
+    provider._client = client
+
+    with pytest.raises(TelegramLoginNeedsPasswordError):
+        await provider.sign_in("+54911", "12345")
+
+    assert provider.status() != STATUS_AUTHENTICATED
+    await provider.disconnect()
+
+
+async def test_provider_sign_in_password_completes_2fa() -> None:
+    client = ManualLoginClient(needs_password=True)
+    provider = ThreadedFakeProvider(client)
+    provider._client = client
+
+    with pytest.raises(TelegramLoginNeedsPasswordError):
+        await provider.sign_in("+54911", "12345")
+
+    await provider.sign_in_password("mi-clave")
+
+    assert client.passwords == ["mi-clave"]
+    assert provider.status() == STATUS_AUTHENTICATED
+    await provider.disconnect()

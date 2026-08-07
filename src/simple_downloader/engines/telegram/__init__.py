@@ -2,6 +2,7 @@ from simple_downloader.engines.telegram.client import (
     STATUS_AUTHENTICATED,
     STATUS_AUTH_REQUIRED,
     TelegramClientProvider,
+    TelegramLoginNeedsPasswordError,
     TelegramNotAuthorizedError,
 )
 from simple_downloader.engines.telegram.engine import TelegramEngine
@@ -13,6 +14,7 @@ __all__ = [
     "TelegramDownloadTask",
     "TelegramEngine",
     "TelegramLink",
+    "TelegramLoginNeedsPasswordError",
     "TelegramNotAuthorizedError",
     "parse_link",
 ]

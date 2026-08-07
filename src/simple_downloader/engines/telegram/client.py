@@ -46,6 +46,18 @@ class TelegramNotAuthorizedError(RuntimeError):
         )
 
 
+class TelegramLoginNeedsPasswordError(RuntimeError):
+    """La cuenta tiene verificación en dos pasos (2FA).
+
+    No es un fallo: la UI debe pedir la contraseña y llamar a
+    `sign_in_password` para completar el login manual."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "la cuenta tiene verificación en dos pasos: pedí la contraseña"
+        )
+
+
 STATUS_IDLE = "idle"  # nunca se intentó conectar
 STATUS_CONNECTING = "connecting"
 STATUS_AUTHENTICATED = "authenticated"
@@ -365,6 +377,44 @@ class TelegramClientProvider:
         """Regenera el token del QR actual y devuelve su nueva URL."""
         return await self._submit(self._qr_refresh)
 
+    # ── login manual (teléfono + código, opcional 2FA) ───────────────────
+
+    async def send_code_request(self, phone: str) -> None:
+        """Pide el código de verificación para `phone` (worker loop).
+
+        Lanza TelegramThrottledError si Telegram bloqueó las peticiones
+        (flood wait); cualquier otro error de Telethon llega tal cual
+        (p.ej. número inválido)."""
+        client = await self._ensure_connected()
+        try:
+            await self._submit(lambda: client.send_code_request(phone))
+        except Exception as exc:
+            raise _translate_throttle(exc) from exc
+
+    async def sign_in(self, phone: str, code: str) -> None:
+        """Confirma el código recibido por SMS/notificación.
+
+        Si la cuenta tiene 2FA, lanza TelegramLoginNeedsPasswordError
+        (la UI debe pedir la contraseña y llamar a `sign_in_password`).
+        La sesión queda guardada en el mismo `.session` que el QR."""
+        client = await self._ensure_connected()
+        try:
+            await self._submit(lambda: client.sign_in(phone=phone, code=code))
+        except Exception as exc:
+            if _is_session_password_needed(exc):
+                raise TelegramLoginNeedsPasswordError() from None
+            raise _translate_throttle(exc) from exc
+        self._status = STATUS_AUTHENTICATED
+
+    async def sign_in_password(self, password: str) -> None:
+        """Completa el login 2FA con la contraseña de la cuenta."""
+        client = await self._ensure_connected()
+        try:
+            await self._submit(lambda: client.sign_in(password=password))
+        except Exception as exc:
+            raise _translate_throttle(exc) from exc
+        self._status = STATUS_AUTHENTICATED
+
     async def _qr_create(self) -> str:
         client = self._client  # corre en el worker
         if client is None:
@@ -401,6 +451,15 @@ def _session_path(session_name: str) -> Path:
     database file" sin decir dónde está el archivo."""
     _SESSION_DIR.mkdir(parents=True, exist_ok=True)
     return _SESSION_DIR / f"{session_name}.session"
+
+
+def _is_session_password_needed(exc: Exception) -> bool:
+    """True si el error es `SessionPasswordNeededError` de Telethon (2FA)."""
+    try:
+        from telethon.errors.rpcerrorlist import SessionPasswordNeededError
+    except ImportError:
+        return False
+    return isinstance(exc, SessionPasswordNeededError)
 
 
 def _translate_throttle(exc: Exception) -> Exception:

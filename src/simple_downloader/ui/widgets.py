@@ -20,6 +20,7 @@ from textual.widgets import Button, Input, Label, ListItem, Select, Static
 
 from simple_downloader.domain.models import DownloadOutput
 from simple_downloader.domain.options import FieldKind, ModalField
+from simple_downloader.engines.telegram import TelegramLoginNeedsPasswordError
 from simple_downloader.infra.qr import qr_ascii
 
 # ── Paleta semántica ──────────────────────────────────────────────────────
@@ -408,22 +409,30 @@ class AddDownloadResult:
 
 
 class TelegramLoginModal(ModalScreen[bool]):
-    """Login de Telegram por QR en runtime.
+    """Login de Telegram en runtime: QR (default) o manual (teléfono+código).
 
-    Muestra el QR como ASCII y lo refresca cuando expira (~25s) hasta
-    que se escanea (vuelve `True`) o se cancela (`False`). La sesión
-    queda guardada: no hace falta volver a loguearse.
+    Modo QR: muestra el QR como ASCII y lo refresca cuando expira (~25s)
+    hasta que se escanea (vuelve `True`) o se cancela (`False`).
+
+    Modo manual ([m]): formulario de teléfono → código → contraseña 2FA
+    (si la cuenta la tiene). Útil en Termux, donde el QR aparece en la
+    misma pantalla donde está Telegram y no se puede escanear.
+
+    La sesión queda guardada en los dos modos: no hace falta volver a
+    loguearse.
     """
 
     BINDINGS = [
         Binding("escape", "cancel", "Cancelar"),
         Binding("c", "cancel", "Cancelar"),
+        Binding("m", "manual", "Login manual"),
     ]
 
     def __init__(self, provider) -> None:
         super().__init__()
         self._provider = provider
         self._qr_task: asyncio.Task | None = None
+        self._manual_mode = False
 
     def compose(self) -> ComposeResult:
         with Container(id="qr-card"):
@@ -433,7 +442,40 @@ class TelegramLoginModal(ModalScreen[bool]):
             )
             yield Static("", id="qr-code")
             yield Static("", id="qr-hint")
-            yield Static("[esc] Cancelar", id="modal-hint")
+            manual_title = Static("✉  Login manual", id="lg-manual-title")
+            manual_title.display = False
+            yield manual_title
+            phone = Input(
+                "",
+                id="lg-phone",
+                placeholder="Número de teléfono (ej. +54 11 5555 1234)",
+            )
+            phone.display = False
+            phone.can_focus = False
+            yield phone
+            phone_hint = Static(
+                "Enter: pedir el código de verificación",
+                id="lg-phone-hint",
+            )
+            phone_hint.display = False
+            yield phone_hint
+            code = Input("", id="lg-code", placeholder="Código de verificación")
+            code.display = False
+            code.can_focus = False
+            yield code
+            password = Input(
+                "",
+                id="lg-password",
+                placeholder="Contraseña de la cuenta (2FA)",
+                password=True,
+            )
+            password.display = False
+            password.can_focus = False
+            yield password
+            yield Static("", id="lg-status")
+            yield Static(
+                "[m] Login manual · [esc] Cancelar", id="modal-hint"
+            )
 
     def on_mount(self) -> None:
         # OJO: NO usar self._task acá: Textual guarda su message pump en
@@ -441,13 +483,120 @@ class TelegramLoginModal(ModalScreen[bool]):
         # Pisarlo con nuestro loop infinito cuelga el cierre del modal y
         # el cancel() revienta la app entera.
         self._qr_task = asyncio.create_task(self._run())
+        # Sin esto, Textual autofoca el primer focusable, que es el Input
+        # de teléfono oculto, y "m"/"c" se teclean en él en vez de llegar
+        # a los bindings del modal.
+        self.focus()
 
     async def on_unmount(self) -> None:
+        self._stop_qr()
+
+    def _stop_qr(self) -> None:
         if self._qr_task is not None:
             self._qr_task.cancel()
+            self._qr_task = None
 
     def action_cancel(self) -> None:
         self.dismiss(False)
+
+    def action_manual(self) -> None:
+        """Cambia al login manual (teléfono + código)."""
+        if self._manual_mode:
+            return
+        self._manual_mode = True
+        self._stop_qr()
+        self.query_one("#qr-code", Static).update("")
+        self.query_one("#qr-hint", Static).update("")
+        self.query_one("#qr-title", Static).update(
+            Text.assemble(("✉  Iniciar sesión manual", "bold white"))
+        )
+        self.query_one("#lg-manual-title", Static).display = False
+        self.query_one("#lg-phone", Input).display = True
+        self.query_one("#lg-phone-hint", Static).display = True
+        self.query_one("#modal-hint", Static).update(
+            "[esc] Cancelar"
+        )
+        phone = self.query_one("#lg-phone", Input)
+        phone.can_focus = True
+        phone.focus()
+
+    def _fail(self, message: str) -> None:
+        self.query_one("#lg-status", Static).update(
+            Text.assemble(("✗  ", ERROR), (message, ERROR))
+        )
+
+    def _clear_status(self) -> None:
+        self.query_one("#lg-status", Static).update("")
+
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        if not self._manual_mode:
+            return
+        input_id = event.input.id
+        if input_id == "lg-phone":
+            await self._send_code()
+        elif input_id == "lg-code":
+            await self._confirm_code()
+        elif input_id == "lg-password":
+            await self._confirm_password()
+
+    async def _send_code(self) -> None:
+        phone = self.query_one("#lg-phone", Input).value.strip()
+        if not phone:
+            self._fail("escribí tu número de teléfono primero")
+            return
+        self._clear_status()
+        try:
+            await self._provider.send_code_request(phone)
+        except Exception as exc:
+            self._fail(str(exc))
+            return
+        self.query_one("#lg-phone", Input).display = False
+        self.query_one("#lg-phone-hint", Static).display = False
+        code_input = self.query_one("#lg-code", Input)
+        code_input.display = True
+        code_input.can_focus = True
+        self.query_one("#lg-status", Static).update(
+            Text.assemble(("✓  Código enviado. ", DIM), ("Ingresalo abajo:", DIM))
+        )
+        code_input.focus()
+
+    async def _confirm_code(self) -> None:
+        phone = self.query_one("#lg-phone", Input).value.strip()
+        code = self.query_one("#lg-code", Input).value.strip()
+        if not code:
+            self._fail("escribí el código que te llegó")
+            return
+        self._clear_status()
+        try:
+            await self._provider.sign_in(phone, code)
+        except TelegramLoginNeedsPasswordError:
+            self.query_one("#lg-code", Input).display = False
+            password_input = self.query_one("#lg-password", Input)
+            password_input.display = True
+            password_input.can_focus = True
+            self.query_one("#lg-status", Static).update(
+                Text.assemble(("🔑  ", DIM), ("Ingresá la contraseña de la cuenta:", DIM))
+            )
+            password_input.focus()
+            return
+        except Exception as exc:
+            self._fail(str(exc))
+            return
+        self.dismiss(True)
+
+    async def _confirm_password(self) -> None:
+        password = self.query_one("#lg-password", Input).value
+        if not password:
+            self._fail("escribí la contraseña de la cuenta")
+            return
+        self._clear_status()
+        try:
+            await self._provider.sign_in_password(password)
+        except Exception as exc:
+            self._fail(str(exc))
+            return
+        self.dismiss(True)
 
     def _show_code(self, url: str) -> None:
         self.query_one("#qr-code", Static).update(qr_ascii(url))
@@ -455,24 +604,27 @@ class TelegramLoginModal(ModalScreen[bool]):
             Text("Escaneá el QR con la app de Telegram para iniciar sesión", DIM)
         )
 
-    def _fail(self, message: str) -> None:
-        self.query_one("#qr-code", Static).update("")
-        self.query_one("#qr-title", Static).update(
-            Text.assemble(("✗  No se pudo iniciar sesión", "bold"), (f"\n{message}", ERROR))
-        )
-
     async def _run(self) -> None:
         try:
             url = await self._provider.qr_begin()
         except Exception as exc:
-            self._fail(str(exc))
+            if not self._manual_mode:
+                self.query_one("#qr-code", Static).update("")
+                self.query_one("#qr-title", Static).update(
+                    Text.assemble(
+                        ("✗  No se pudo iniciar sesión", "bold"), (f"\n{exc}", ERROR)
+                    )
+                )
+            return
+        if self._manual_mode:
             return
         self._show_code(url)
         while True:
             try:
                 ok = await self._provider.qr_wait(25)
             except Exception as exc:
-                self._fail(str(exc))
+                if not self._manual_mode:
+                    self._fail(str(exc))
                 return
             if ok:
                 self.dismiss(True)

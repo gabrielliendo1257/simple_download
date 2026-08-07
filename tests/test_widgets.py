@@ -83,3 +83,97 @@ async def test_telegram_login_modal_closes_on_escape_without_killing_app() -> No
         # `_task` de Textual y el cierre mataba la app).
         assert app.screen is app.screen_stack[0]
         assert app.is_running
+
+
+from textual.app import App
+from textual.screen import ModalScreen
+
+from simple_downloader.ui.widgets import TelegramLoginModal
+
+
+class _ManualProvider:
+    def __init__(self) -> None:
+        self.sent_codes: list[str] = []
+        self.sign_ins: list[tuple[str, str]] = []
+        self.passwords: list[str] = []
+
+    async def qr_begin(self) -> str:
+        return "https://t.me/login/abc"
+
+    async def qr_wait(self, timeout: float = 25.0) -> bool:
+        await asyncio.sleep(0.05)
+        return False
+
+    async def qr_refresh(self) -> str:
+        return "https://t.me/login/abc2"
+
+    async def send_code_request(self, phone: str) -> None:
+        self.sent_codes.append(phone)
+
+    async def sign_in(self, phone: str, code: str):
+        from simple_downloader.engines.telegram import (
+            TelegramLoginNeedsPasswordError,
+        )
+
+        self.sign_ins.append((phone, code))
+        raise TelegramLoginNeedsPasswordError()
+
+    async def sign_in_password(self, password: str) -> None:
+        self.passwords.append(password)
+
+
+class _ManualHost(App[None]):
+    def __init__(self, provider: object) -> None:
+        super().__init__()
+        self.modal: ModalScreen[bool] | None = None
+        self.modal_result: asyncio.Future[bool] | None = None
+        self.provider = provider
+
+    async def on_mount(self) -> None:
+        self.modal = TelegramLoginModal(self.provider)  # type: ignore[arg-type]
+        self.push_screen(self.modal, callback=self._on_modal_result)
+
+    def _on_modal_result(self, result: bool | None) -> None:
+        self.modal_result = result
+
+
+async def test_telegram_login_modal_manual_flow() -> None:
+    provider = _ManualProvider()
+    app = _ManualHost(provider)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause(0.2)
+        await pilot.press("m")
+        await pilot.pause(0.1)
+
+        phone = app.modal.query_one("#lg-phone")
+        code = app.modal.query_one("#lg-code")
+        password = app.modal.query_one("#lg-password")
+        assert phone.display is not False
+        assert code.display is False
+        assert password.display is False
+
+        phone.focus()
+        await pilot.press(*"+5491100000000")
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+
+        assert provider.sent_codes == ["+5491100000000"]
+        assert code.display is not False
+
+        code.focus()
+        await pilot.press(*"12345")
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+
+        assert provider.sign_ins == [("+5491100000000", "12345")]
+        assert password.display is not False
+
+        password.focus()
+        await pilot.press(*"mi-clave")
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+
+        assert provider.passwords == ["mi-clave"]
+        assert app.modal_result is True
+        assert app.screen is app.screen_stack[0]
+        assert app.is_running
