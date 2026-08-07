@@ -31,7 +31,10 @@ class TelegramEngine(Engine):
             raise ValueError(f"no es un link de Telegram: {request.url}")
 
         message = await self._provider.get_message(link.peer, link.message_id)
-        if message is None or not getattr(message, "media", None):
+        if message is None or getattr(message, "file", None) is None:
+            # `file` es el discriminador real de Telethon: solo los media
+            # descargables (documento, foto, vídeo, audio...) lo tienen.
+            # Un mensaje de texto (o con preview de página) no lo tiene.
             raise ValueError(f"el mensaje {link.message_id} no tiene media")
 
         default_name = _document_name(link, message)
@@ -51,12 +54,12 @@ class TelegramEngine(Engine):
         )
 
     async def validate(self, url: str) -> None:
-        """Verificación ligera: el mensaje existe y tiene media."""
+        """Verificación ligera: el mensaje existe y tiene media descargable."""
         link = parse_link(url)
         if link is None:
             raise ValueError(f"no es un link de Telegram: {url}")
         message = await self._provider.get_message(link.peer, link.message_id)
-        if message is None or not getattr(message, "media", None):
+        if message is None or getattr(message, "file", None) is None:
             raise ValueError(f"el mensaje {link.message_id} no tiene media")
 
 

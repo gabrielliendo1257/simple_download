@@ -19,10 +19,23 @@ from simple_downloader.engines.telegram.task import TelegramDownloadTask
 from simple_downloader.infra.config import TelegramConfig
 
 
+_NO_FILE = object()
+
+
 class FakeMessage:
-    def __init__(self, media: object = object(), name: str = "video.mp4") -> None:
+    def __init__(
+        self,
+        media: object = object(),
+        name: str = "video.mp4",
+        file: object = _NO_FILE,
+    ) -> None:
         self.media = media
-        self.file = type("File", (), {"name": name, "ext": ".mp4", "size": 1024})()
+        if file is _NO_FILE:
+            self.file = type(
+                "File", (), {"name": name, "ext": ".mp4", "size": 1024}
+            )()
+        else:
+            self.file = file
 
 
 class FakeClient:
@@ -175,7 +188,18 @@ def test_create_task_fallback_name_without_document(tmp_path) -> None:
 
 
 def test_create_task_raises_when_message_has_no_media() -> None:
-    engine = _engine(FakeClient(FakeMessage(media=None)))
+    # Mensaje de texto: sin media y sin file (no descargable).
+    engine = _engine(FakeClient(FakeMessage(media=None, file=None)))
+    request = DownloadRequest(url="https://t.me/mi_canal/123")
+
+    with pytest.raises(ValueError, match="no tiene media"):
+        asyncio.run(engine.create_task(request))
+
+
+def test_create_task_raises_when_message_only_has_webpage_preview() -> None:
+    # Texto con preview: media existe (MessageMediaWebPage) pero no hay
+    # file; debe rechazarse igual que un mensaje de texto.
+    engine = _engine(FakeClient(FakeMessage(media=object(), file=None)))
     request = DownloadRequest(url="https://t.me/mi_canal/123")
 
     with pytest.raises(ValueError, match="no tiene media"):
@@ -197,7 +221,14 @@ def test_validate_passes_when_message_has_media() -> None:
 
 
 def test_validate_raises_when_message_has_no_media() -> None:
-    engine = _engine(FakeClient(FakeMessage(media=None)))
+    engine = _engine(FakeClient(FakeMessage(media=None, file=None)))
+
+    with pytest.raises(ValueError, match="no tiene media"):
+        asyncio.run(engine.validate("https://t.me/mi_canal/123"))
+
+
+def test_validate_raises_when_message_only_has_webpage_preview() -> None:
+    engine = _engine(FakeClient(FakeMessage(media=object(), file=None)))
 
     with pytest.raises(ValueError, match="no tiene media"):
         asyncio.run(engine.validate("https://t.me/mi_canal/123"))

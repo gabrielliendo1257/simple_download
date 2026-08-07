@@ -339,13 +339,20 @@ class DownloadApp(App[None]):
         await validate(url)
 
     async def _resolve_telegram_title(self, link: TelegramLink) -> str | None:
-        """Nombre real que reporta Telegram (si lo da); None = aleatorio."""
+        """Nombre real que reporta Telegram (si lo da); None = aleatorio.
+
+        Los mensajes de texto (o con preview de página) no tienen `file`
+        y no son descargables: se rechazan aquí para que la validación
+        del engine dispare la notificación de error.
+        """
         provider = (
             self._backend.telegram_provider if self._backend is not None else None
         )
         if provider is None:
             raise RuntimeError("Telegram no está configurado")
         message = await provider.get_message(link.peer, link.message_id)
+        if message is None or getattr(message, "file", None) is None:
+            raise ValueError(f"el mensaje {link.message_id} no tiene media")
         return _telegram_media_name(message) or None
 
     async def _resolve_web_title(self, url: str) -> str | None:
