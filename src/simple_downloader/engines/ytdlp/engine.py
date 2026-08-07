@@ -4,6 +4,11 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from simple_downloader.domain.models import DownloadOutput, DownloadRequest
+from simple_downloader.domain.options import (
+    COOKIES_FIELD,
+    HEADERS_FIELD,
+    ModalField,
+)
 from simple_downloader.domain.protocols import DownloadTask, Engine
 from simple_downloader.engines.ytdlp.adapter import SubprocessTaskAdapter
 from simple_downloader.executor import ExecutableName
@@ -53,6 +58,9 @@ class YtDlpEngine(Engine):
 
     def supports(self, url: str) -> bool:
         return True
+
+    def modal_fields(self) -> list[ModalField]:
+        return [HEADERS_FIELD, COOKIES_FIELD]
 
     async def create_task(self, request: DownloadRequest) -> DownloadTask:
         source = self._source_provider.get_source(ExecutableName.YT_DLP)

@@ -4,6 +4,11 @@ from pathlib import Path
 from urllib.parse import parse_qsl, unquote, urlsplit
 
 from simple_downloader.domain.models import DownloadRequest
+from simple_downloader.domain.options import (
+    HEADERS_FIELD,
+    USER_AGENT_FIELD,
+    ModalField,
+)
 from simple_downloader.domain.protocols import DownloadTask, Engine, HttpClient
 from simple_downloader.engines.common import (
     http_with_context,
@@ -72,6 +77,9 @@ class HttpEngine(Engine):
         if Path(parts.path).suffix.lower() in _DIRECT_EXTENSIONS:
             return True
         return _media_from_query(parts.query) is not None
+
+    def modal_fields(self) -> list[ModalField]:
+        return [HEADERS_FIELD, USER_AGENT_FIELD]
 
     async def create_task(self, request: DownloadRequest) -> DownloadTask:
         http = http_with_context(self._http, request.url, request.context)

@@ -18,6 +18,7 @@ from textual.suggester import Suggester
 from textual.widgets import Button, Input, Label, ListItem, Static
 
 from simple_downloader.domain.models import DownloadOutput
+from simple_downloader.domain.options import FieldKind, ModalField
 from simple_downloader.infra.qr import qr_ascii
 
 # ── Paleta semántica ──────────────────────────────────────────────────────
@@ -402,8 +403,7 @@ def _pairs_to_headers(pairs: Iterable[tuple[str, str]]) -> dict[str, str]:
 @dataclass
 class AddDownloadResult:
     output: DownloadOutput | None
-    headers: dict[str, str] | None
-    cookies_path: str | None = None
+    field_values: dict[str, str]
 
 
 class TelegramLoginModal(ModalScreen[bool]):
@@ -529,10 +529,12 @@ class PathInput(Input):
 
 
 class AddDownloadModal(ModalScreen[AddDownloadResult | None]):
-    """Añade una descarga: nombre, carpeta y headers editables por descarga.
+    """Añade una descarga: nombre, carpeta y los campos del engine.
 
-    Los valores iniciales vienen de la config de usuario; el resultado
-    es un `AddDownloadResult` (o `None` si se cancela).
+    El modal no sabe qué engine resuelve la URL: recibe su
+    especificación (`ModalField`) y renderiza nombre + carpeta (fijos)
+    más los campos declarados. El resultado es un dict genérico
+    (`field_values`) que la app traduce a `DownloadContext`.
     """
 
     BINDINGS = [
@@ -546,12 +548,14 @@ class AddDownloadModal(ModalScreen[AddDownloadResult | None]):
         *,
         default_name: str = "",
         directory: str = "downloads",
+        fields: list[ModalField] | None = None,
     ) -> None:
         super().__init__()
         self._url = url
         self._default_name = default_name
         self._default_directory = directory
-        self._row_count = 1  # la fila 0 se crea en compose
+        self._fields = list(fields or [])
+        self._row_count = 1  # la fila 0 de headers se crea en compose
 
     def compose(self) -> ComposeResult:
         with Container(id="add-card"):
@@ -571,18 +575,32 @@ class AddDownloadModal(ModalScreen[AddDownloadResult | None]):
                 id="add-folder",
                 suggester=PathSuggester(),
             )
-            yield PathInput(
-                value="",
-                placeholder="Cookies de yt-dlp (.txt, opcional)",
-                id="add-cookies",
-                suggester=PathSuggester(),
-            )
-            yield Label("Headers (opcional)", classes="field-label")
-            with VerticalScroll(id="headers-fields"):
-                yield self._make_header_row(0)
+            yield from self._render_fields()
             with Container(id="add-actions"):
                 yield Button("Añadir", id="add-submit")
                 yield Button("Cancelar", id="add-cancel")
+
+    def _render_fields(self) -> ComposeResult:
+        for spec in self._fields:
+            if spec.kind is FieldKind.HEADERS:
+                yield Label(spec.label, classes="field-label")
+                with VerticalScroll(id="headers-fields"):
+                    yield self._make_header_row(0)
+            elif spec.kind is FieldKind.PATH:
+                yield Label(spec.label, classes="field-label")
+                yield PathInput(
+                    placeholder=spec.placeholder,
+                    id=f"field-{spec.key}",
+                    classes="field-input",
+                    suggester=PathSuggester(),
+                )
+            else:
+                yield Label(spec.label, classes="field-label")
+                yield Input(
+                    placeholder=spec.placeholder,
+                    id=f"field-{spec.key}",
+                    classes="field-input",
+                )
 
     def on_mount(self) -> None:
         # Cursor fijo sin parpadeo: en tmux el blink de Textual no
@@ -613,16 +631,27 @@ class AddDownloadModal(ModalScreen[AddDownloadResult | None]):
         if self._last_row_has_text():
             await self._add_header_row()
 
+    def _field_ids(self) -> list[str]:
+        """Ids de los inputs en orden de foco: primero la fila 0 de
+        headers (si el engine la pidió), luego los campos simples."""
+        ids: list[str] = []
+        for spec in self._fields:
+            if spec.kind is FieldKind.HEADERS:
+                ids.append("header-key-0")
+            else:
+                ids.append(f"field-{spec.key}")
+        return ids
+
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         event.stop()
         if event.input.id == "add-name":
             self.query_one("#add-folder", Input).focus()
             return
         if event.input.id == "add-folder":
-            self.query_one("#add-cookies", Input).focus()
+            self._focus_next("add-folder")
             return
-        if event.input.id == "add-cookies":
-            self.query_one("#header-key-0", Input).focus()
+        if event.input.id.startswith("field-"):
+            self._focus_next(event.input.id)
             return
         index = self._row_index(event.input.id)
         if index is None:
@@ -640,6 +669,26 @@ class AddDownloadModal(ModalScreen[AddDownloadResult | None]):
         # Fila vacía: confirmar. Ojo: en tmux/la mayoría de terminales
         # Ctrl+Enter llega como Enter, así que Enter es la vía fiable.
         self._confirm()
+
+    def _focus_next(self, current_id: str) -> None:
+        """Avanza al siguiente input del modal; el último confirma.
+
+        Enter en el último campo (o en la carpeta sin campos) confirma
+        la descarga, como antes hacía la fila de headers vacía."""
+        ids = self._field_ids()
+        if not ids:
+            self._confirm()
+            return
+        try:
+            index = ids.index(current_id)
+        except ValueError:
+            # El input actual no es un campo (ej. la carpeta): primero.
+            index = -1
+        next_id = ids[index + 1] if index + 1 < len(ids) else None
+        if next_id is None:
+            self._confirm()
+            return
+        self.query_one(f"#{next_id}", Input).focus()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "add-submit":
@@ -689,26 +738,37 @@ class AddDownloadModal(ModalScreen[AddDownloadResult | None]):
         value = self.query_one(f"#header-value-{index}", Input).value.strip()
         return bool(key or value)
 
-    def _collect_headers(self) -> dict[str, str]:
-        pairs: list[tuple[str, str]] = []
-        for index in range(self._row_count):
-            key = self.query_one(f"#header-key-{index}", Input).value
-            value = self.query_one(f"#header-value-{index}", Input).value
-            pairs.append((key, value))
-        return _pairs_to_headers(pairs)
-
     def _confirm(self) -> None:
         name = self.query_one("#add-name", Input).value.strip()
         folder = self.query_one("#add-folder", Input).value.strip()
-        cookies = self.query_one("#add-cookies", Input).value.strip()
-        headers = self._collect_headers()
+
+        values: dict[str, str] = {}
+        for spec in self._fields:
+            if spec.kind is FieldKind.HEADERS:
+                lines = []
+                for index in range(self._row_count):
+                    key = (
+                        self.query_one(f"#header-key-{index}", Input)
+                        .value.strip()
+                    )
+                    value = (
+                        self.query_one(f"#header-value-{index}", Input)
+                        .value.strip()
+                    )
+                    if key and value:
+                        lines.append(f"{key}: {value}")
+                values[spec.key] = "\n".join(lines)
+            else:
+                values[spec.key] = (
+                    self.query_one(f"#field-{spec.key}", Input).value.strip()
+                )
+
         self.dismiss(
             AddDownloadResult(
                 output=DownloadOutput(
                     directory=Path(folder or self._default_directory).expanduser(),
                     filename=name or None,
                 ),
-                headers=headers or None,
-                cookies_path=cookies or None,
+                field_values=values,
             )
         )

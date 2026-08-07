@@ -4,6 +4,12 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 from simple_downloader.domain.models import DownloadRequest
+from simple_downloader.domain.options import (
+    HEADERS_FIELD,
+    PARALLEL_SEGMENTS_FIELD,
+    USER_AGENT_FIELD,
+    ModalField,
+)
 from simple_downloader.domain.protocols import DownloadTask, Engine, HttpClient
 from simple_downloader.engines.common import http_with_context, resolve_output
 from simple_downloader.engines.hls.fetch import SegmentFetcher
@@ -31,6 +37,9 @@ class HlsEngine(Engine):
         # Evaluar sobre el path, no la URL completa: las playlists reales
         # llevan query string (hash, expires, ip) después del .m3u8.
         return urlsplit(url).path.lower().endswith(".m3u8")
+
+    def modal_fields(self) -> list[ModalField]:
+        return [HEADERS_FIELD, USER_AGENT_FIELD, PARALLEL_SEGMENTS_FIELD]
 
     async def create_task(self, request: DownloadRequest) -> DownloadTask:
         http = http_with_context(self._http, request.url, request.context)
