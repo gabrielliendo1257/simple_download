@@ -90,6 +90,25 @@ class FallbackTask(FakeTask):
         )
 
 
+class WaitingTask(FakeTask):
+    """Tarea que espera el turno del semáforo de Telegram y después sigue."""
+
+    def __init__(self) -> None:
+        super().__init__(steps=5)
+        self.waiting_for_slot = True
+        self.gate = asyncio.Event()
+
+    async def progress(self):
+        for step in range(1, self.steps + 1):
+            if step == 2:
+                await self.gate.wait()
+                self.waiting_for_slot = False
+            yield DownloadProgress(
+                downloaded_bytes=step * 10,
+                total_bytes=50,
+            )
+
+
 class BrokenEngine:
     """Engine cuyo create_task falla en red (p. ej. HLS con 403)."""
 
@@ -273,6 +292,26 @@ async def test_resume_fallback_sets_job_notice() -> None:
     assert job.state is DownloadState.COMPLETED
     assert job.notice is not None
     assert "HTTP 200" in job.notice
+
+
+async def test_waiting_notice_appears_and_clears() -> None:
+    task = WaitingTask()
+    manager, scheduler, _bus = _build(engine=FakeEngine(task))
+    job = await manager.enqueue(DownloadRequest(url="https://t.me/canal/123"))
+
+    await manager.start(job.id)
+    await asyncio.sleep(0.05)
+
+    # Mientras espera el turno, el aviso es visible en el job.
+    assert job.notice is not None
+    assert "esperando turno de Telegram" in job.notice
+
+    task.gate.set()
+    await asyncio.sleep(0.05)
+    await scheduler.finish()
+
+    assert job.state is DownloadState.COMPLETED
+    assert job.notice is None  # el aviso se limpió al conseguir turno
 
 
 async def test_start_with_broken_engine_marks_failed_without_raising() -> None:

@@ -42,6 +42,9 @@ class TelegramDownloadTask:
         self._total: int | None = None
         self.resume_fallback: bool = False
         self.resume_fallback_reason: str | None = None
+        # True mientras la descarga espera un turno del semáforo de
+        # conexiones de Telegram (el job queda en espera, no congelado).
+        self.waiting_for_slot: bool = False
 
     def _start(self) -> asyncio.Task[None]:
         if not self._started:
@@ -54,6 +57,11 @@ class TelegramDownloadTask:
 
         return self._run_task
 
+    def _on_waiting(self, waiting: bool) -> None:
+        if self.waiting_for_slot != waiting:
+            self.waiting_for_slot = waiting
+            self._change.set()
+
     async def _run(self) -> None:
         try:
             offset = self._resume_offset()
@@ -63,6 +71,7 @@ class TelegramDownloadTask:
                     out_file=self.out_file,
                     offset=offset,
                     progress_callback=self._on_progress,
+                    waiting_callback=self._on_waiting,
                 )
             except asyncio.CancelledError:
                 raise
@@ -85,6 +94,7 @@ class TelegramDownloadTask:
                         out_file=self.out_file,
                         offset=0,
                         progress_callback=self._on_progress,
+                        waiting_callback=self._on_waiting,
                     )
                 else:
                     raise
@@ -119,6 +129,7 @@ class TelegramDownloadTask:
     async def progress(self) -> AsyncIterator[DownloadProgress]:
         run_task = self._start()
         written = 0
+        waiting = False
 
         while not self._done.is_set():
             done_waiter = asyncio.create_task(self._done.wait())
@@ -130,8 +141,12 @@ class TelegramDownloadTask:
             done_waiter.cancel()
 
             self._change.clear()
-            if self._written != written:
+            # También se reporta cuando cambia la espera del semáforo de
+            # conexiones: el job en espera emite progreso (0 bytes) para
+            # que la UI muestre el aviso.
+            if self._written != written or self.waiting_for_slot != waiting:
                 written = self._written
+                waiting = self.waiting_for_slot
                 yield DownloadProgress(
                     downloaded_bytes=written, total_bytes=self._total
                 )

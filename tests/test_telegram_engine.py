@@ -52,7 +52,9 @@ class FakeProvider:
     async def get_message(self, peer, message_id):
         return await self._client.get_messages(peer, ids=message_id)
 
-    async def download_to(self, message, out_file, offset=0, progress_callback=None):
+    async def download_to(
+        self, message, out_file, offset=0, progress_callback=None, waiting_callback=None
+    ):
         with open(out_file, "wb" if offset == 0 else "ab") as handle:
             async for chunk in self._client.iter_download(message.media, offset=offset):
                 handle.write(chunk)
@@ -314,12 +316,19 @@ async def test_task_fallback_restarts_when_resume_fails(tmp_path) -> None:
             self.failed_offset: int | None = None
 
         async def download_to(
-            self, message, out_file, offset=0, progress_callback=None
+            self,
+            message,
+            out_file,
+            offset=0,
+            progress_callback=None,
+            waiting_callback=None,
         ):
             if offset > 0:
                 self.failed_offset = offset
                 raise RuntimeError("offset no soportado")
-            return await super().download_to(message, out_file, 0, progress_callback)
+            return await super().download_to(
+                message, out_file, 0, progress_callback, waiting_callback
+            )
 
     out = tmp_path / "out.mp4"
     out.write_bytes(FakeClient.DATA[:512])  # parcial previo
@@ -454,7 +463,12 @@ async def test_task_does_not_fallback_when_throttled(tmp_path) -> None:
 
     class ThrottledProvider(FakeProvider):
         async def download_to(
-            self, message, out_file, offset=0, progress_callback=None
+            self,
+            message,
+            out_file,
+            offset=0,
+            progress_callback=None,
+            waiting_callback=None,
         ):
             raise TelegramThrottledError(32, caused_by="flood wait")
 
@@ -474,3 +488,56 @@ async def test_task_does_not_fallback_when_throttled(tmp_path) -> None:
 
     assert task.resume_fallback is False  # no reinicia desde cero
     assert out.read_bytes() == b"partial"  # ni toca el parcial
+
+
+async def test_task_reports_waiting_for_slot(tmp_path) -> None:
+    """Mientras espera el semáforo, el task expone waiting_for_slot y el
+    loop de progreso emite eventos (0 bytes) para que la UI avise."""
+
+    class WaitingProvider(FakeProvider):
+        def __init__(self, client: FakeClient) -> None:
+            super().__init__(client)
+            self.released = asyncio.Event()
+
+        async def download_to(
+            self,
+            message,
+            out_file,
+            offset=0,
+            progress_callback=None,
+            waiting_callback=None,
+        ):
+            waiting_callback(True)
+            await self.released.wait()
+            waiting_callback(False)
+            return await super().download_to(
+                message, out_file, offset, progress_callback, waiting_callback
+            )
+
+    provider = WaitingProvider(FakeClient())
+    task = TelegramDownloadTask(
+        message=FakeMessage(),
+        out_file=tmp_path / "out.mp4",
+        provider=provider,
+    )
+
+    async def consume() -> list:
+        seen = []
+        async for item in task.progress():
+            seen.append((item.downloaded_bytes, task.waiting_for_slot))
+            if len(seen) >= 2:
+                break
+        return seen
+
+    consumer = asyncio.create_task(consume())
+    await asyncio.sleep(0.05)
+    assert task.waiting_for_slot is True  # está esperando turno
+
+    provider.released.set()
+    seen = await consumer
+    assert seen[0] == (0, True)  # emitió progreso avisando la espera
+
+    async for _ in task.progress():
+        pass
+    await task.finalize()
+    assert task.waiting_for_slot is False

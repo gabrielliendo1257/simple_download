@@ -108,6 +108,7 @@ class TelegramClientProvider:
         out_file: Path,
         offset: int = 0,
         progress_callback: Callable[[int, int], None] | None = None,
+        waiting_callback: Callable[[bool], None] | None = None,
     ) -> None:
         """Descarga (o reanuda desde `offset`) el media escribiendo en
         `out_file`, abierto en modo append para no pisar el parcial.
@@ -115,7 +116,10 @@ class TelegramClientProvider:
         Todo corre en el hilo worker (Telethon); el progreso vuelve al
         loop del llamante por `call_soon_threadsafe`. El progreso reporta
         la posición absoluta en el archivo (`f.tell()`), así que al
-        reanudar la barra continúa desde donde quedó."""
+        reanudar la barra continúa desde donde quedó.
+
+        `waiting_callback(True/False)` avisa cuándo la descarga quedó
+        esperando un turno del semáforo de conexiones (o lo consiguió)."""
         client = await self._ensure_client()
         main_loop = asyncio.get_running_loop()
 
@@ -123,9 +127,13 @@ class TelegramClientProvider:
             if progress_callback is not None:
                 main_loop.call_soon_threadsafe(progress_callback, received, total)
 
+        def on_waiting(waiting: bool) -> None:
+            if waiting_callback is not None:
+                main_loop.call_soon_threadsafe(waiting_callback, waiting)
+
         fut = self._submit(
             lambda: self._download_guarded(
-                client, message, out_file, offset, on_progress
+                client, message, out_file, offset, on_progress, on_waiting
             )
         )
         try:
@@ -141,13 +149,19 @@ class TelegramClientProvider:
         out_file: Path,
         offset: int,
         progress_callback: Callable[[int, int], None] | None,
+        waiting_callback: Callable[[bool], None] | None = None,
     ) -> None:
         """Igual que `_download` pero con tope de descargas simultáneas:
-        evita superar el límite de conexiones de Telegram y los flood waits."""
+        evita superar el límite de conexiones de Telegram y los flood waits.
+        Si el semáforo está ocupado, avisa que quedó en espera."""
         slots = self._dl_slots
         if slots is None:
             slots = asyncio.Semaphore(_MAX_CONCURRENT_DOWNLOADS)
+        if slots.locked() and waiting_callback is not None:
+            waiting_callback(True)
         async with slots:
+            if waiting_callback is not None:
+                waiting_callback(False)
             await self._download(client, message, out_file, offset, progress_callback)
 
     async def _download(

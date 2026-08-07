@@ -70,6 +70,7 @@ class DownloadScheduler:
                 if job.state is not DownloadState.RUNNING:
                     continue
                 self._carry_resume_notice(job)
+                self._carry_waiting_notice(job)
                 await self._event_bus.publish(
                     event=DownloadProgressEvent(job_id=job.id, progress=progress)
                 )
@@ -111,6 +112,25 @@ class DownloadScheduler:
                 getattr(task, "resume_fallback_reason", None)
                 or "no se pudo reanudar; se reinició la descarga"
             )
+
+    def _carry_waiting_notice(self, job: DownloadJob) -> None:
+        """Avisa (y luego limpia) cuando la descarga espera turno por el
+        límite de conexiones de Telegram: el job sigue en RUNNING con
+        0 bytes, pero el usuario ve el motivo en la lista."""
+        task = job.task
+        if task is None:
+            return
+        waiting = getattr(task, "waiting_for_slot", False)
+        if waiting and job.notice is None:
+            job.notice = (
+                "esperando turno de Telegram (máx. 2 descargas " "simultáneas)…"
+            )
+        elif (
+            not waiting
+            and job.notice is not None
+            and job.notice.startswith("esperando turno de Telegram")
+        ):
+            job.notice = None
 
 
 def _failure_message(result: DownloadResult) -> str:
