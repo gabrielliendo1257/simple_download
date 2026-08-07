@@ -9,6 +9,24 @@ from simple_downloader.infra.config import TelegramConfig
 
 _SESSION_DIR = Path.home() / ".config" / "simple-downloader"
 
+# Telegram limita las conexiones simultáneas por cuenta: más de unas pocas
+# descargas a la vez provoca bloqueos (flood wait ~32s). Este tope es
+# independiente del scheduler y evita llegar a ese límite.
+_MAX_CONCURRENT_DOWNLOADS = 2
+
+
+class TelegramThrottledError(RuntimeError):
+    """Telegram bloqueó temporalmente la cuenta (límite de conexiones o
+    velocidad de descarga). No reintentar de inmediato: hay que esperar."""
+
+    def __init__(self, wait_seconds: int, *, caused_by: str = "") -> None:
+        self.wait_seconds = wait_seconds
+        cause = f" ({caused_by})" if caused_by else ""
+        super().__init__(
+            f"Telegram bloqueó temporalmente la cuenta: esperá "
+            f"{wait_seconds}s y reintentá{cause}"
+        )
+
 
 class TelegramClientProvider:
     """Cliente Telethon aislado en su propio hilo y event loop.
@@ -34,6 +52,7 @@ class TelegramClientProvider:
         self._thread: threading.Thread | None = None
         self._client: Any | None = None
         self._client_ready: asyncio.Future[Any] | None = None
+        self._dl_slots: asyncio.Semaphore | None = None
 
     # ── hilo worker ─────────────────────────────────────────────────────
 
@@ -105,13 +124,31 @@ class TelegramClientProvider:
                 main_loop.call_soon_threadsafe(progress_callback, received, total)
 
         fut = self._submit(
-            lambda: self._download(client, message, out_file, offset, on_progress)
+            lambda: self._download_guarded(
+                client, message, out_file, offset, on_progress
+            )
         )
         try:
             await fut
         except asyncio.CancelledError:
             fut.cancel()  # cancela también la tarea en el worker loop
             raise
+
+    async def _download_guarded(
+        self,
+        client: Any,
+        message: Any,
+        out_file: Path,
+        offset: int,
+        progress_callback: Callable[[int, int], None] | None,
+    ) -> None:
+        """Igual que `_download` pero con tope de descargas simultáneas:
+        evita superar el límite de conexiones de Telegram y los flood waits."""
+        slots = self._dl_slots
+        if slots is None:
+            slots = asyncio.Semaphore(_MAX_CONCURRENT_DOWNLOADS)
+        async with slots:
+            await self._download(client, message, out_file, offset, progress_callback)
 
     async def _download(
         self,
@@ -126,10 +163,15 @@ class TelegramClientProvider:
         # offset=0 trunca el parcial (fallback a descarga completa);
         # offset>0 continúa en modo append.
         with open(out_file, "wb" if offset == 0 else "ab") as handle:
-            async for chunk in client.iter_download(message.media, offset=offset):
-                handle.write(chunk)
-                if progress_callback is not None:
-                    progress_callback(handle.tell(), total)
+            try:
+                async for chunk in client.iter_download(message.media, offset=offset):
+                    handle.write(chunk)
+                    if progress_callback is not None:
+                        progress_callback(handle.tell(), total)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                raise _translate_throttle(exc) from exc
 
     async def get_me(self) -> Any:
         client = await self._ensure_client()
@@ -177,6 +219,29 @@ class TelegramClientProvider:
             str(session),
             api_id=self._config.api_id,
             api_hash=self._config.api_hash,
+            # Sin sleeps silenciosos: los bloqueos los traducimos a
+            # TelegramThrottledError y se avisan (flood_sleep_threshold=0).
+            flood_sleep_threshold=0,
         )
+        self._dl_slots = asyncio.Semaphore(_MAX_CONCURRENT_DOWNLOADS)
         await client.start()
         return client
+
+
+def _translate_throttle(exc: Exception) -> Exception:
+    """Convierte los bloqueos de Telegram en TelegramThrottledError.
+
+    `FloodWaitError`: la cuenta pidió esperar N segundos (límite de
+    peticiones/descargas). El error de "wait for a connection" (agotadas
+    las conexiones del DC) llega como FloodWaitError con seconds=1.
+    """
+    try:
+        from telethon.errors.rpcerrorlist import FloodWaitError
+    except ImportError:
+        return exc
+
+    if isinstance(exc, FloodWaitError):
+        return TelegramThrottledError(
+            getattr(exc, "seconds", 30), caused_by="flood wait"
+        )
+    return exc

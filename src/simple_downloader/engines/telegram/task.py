@@ -7,6 +7,7 @@ from typing import Any, AsyncIterator
 
 from simple_downloader.domain.models import DownloadProgress, DownloadResult
 from simple_downloader.engines.common import discard_partial
+from simple_downloader.engines.telegram.client import TelegramThrottledError
 
 
 @dataclass
@@ -64,6 +65,10 @@ class TelegramDownloadTask:
                     progress_callback=self._on_progress,
                 )
             except asyncio.CancelledError:
+                raise
+            except TelegramThrottledError:
+                # Bloqueo de Telegram: no reiniciar desde cero (haría más
+                # peticiones); falla con el mensaje de espera.
                 raise
             except Exception:
                 if offset > 0:

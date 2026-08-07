@@ -10,7 +10,10 @@ from simple_downloader.engines.telegram import (
     TelegramEngine,
     parse_link,
 )
-from simple_downloader.engines.telegram.client import TelegramClientProvider
+from simple_downloader.engines.telegram.client import (
+    TelegramClientProvider,
+    TelegramThrottledError,
+)
 from simple_downloader.engines.telegram.links import TelegramLink
 from simple_downloader.engines.telegram.task import TelegramDownloadTask
 from simple_downloader.infra.config import TelegramConfig
@@ -382,3 +385,92 @@ def test_telegram_config_requires_credentials() -> None:
     assert not TelegramConfig().is_usable()
     assert not TelegramConfig(enabled=True).is_usable()
     assert TelegramConfig(enabled=True, api_id=1, api_hash="x").is_usable()
+
+
+# ── políticas de conexión: semáforo y flood waits ─────────────────────────
+
+
+async def test_flood_wait_becomes_throttled_error(tmp_path) -> None:
+    from telethon.errors.rpcerrorlist import FloodWaitError
+
+    class FloodingClient(FakeClient):
+        async def iter_download(self, file, *, offset=0, **kwargs):
+            raise FloodWaitError(None, capture=32)
+            yield  # pragma: no cover
+
+    provider = TelegramClientProvider(config=None)
+    provider._dl_slots = asyncio.Semaphore(1)
+
+    with pytest.raises(TelegramThrottledError) as excinfo:
+        await provider._download_guarded(
+            FloodingClient(),
+            FakeMessage(),
+            tmp_path / "out.mp4",
+            offset=0,
+            progress_callback=None,
+        )
+
+    assert excinfo.value.wait_seconds == 32
+    assert "esperá 32s" in str(excinfo.value)
+
+
+async def test_concurrent_downloads_respect_semaphore(tmp_path) -> None:
+    active = 0
+    max_active = 0
+
+    class SlowClient(FakeClient):
+        async def iter_download(self, file, *, offset=0, **kwargs):
+            nonlocal active, max_active
+            active += 1
+            max_active = max(max_active, active)
+            try:
+                await asyncio.sleep(0.02)
+                yield b"x" * 16
+            finally:
+                active -= 1
+
+    provider = TelegramClientProvider(config=None)
+    provider._dl_slots = asyncio.Semaphore(2)
+    client = SlowClient()
+
+    await asyncio.gather(
+        *[
+            provider._download_guarded(
+                client,
+                FakeMessage(),
+                tmp_path / f"out{i}.mp4",
+                offset=0,
+                progress_callback=None,
+            )
+            for i in range(4)
+        ]
+    )
+
+    assert max_active <= 2
+
+
+async def test_task_does_not_fallback_when_throttled(tmp_path) -> None:
+    from simple_downloader.engines.telegram.client import TelegramThrottledError
+
+    class ThrottledProvider(FakeProvider):
+        async def download_to(
+            self, message, out_file, offset=0, progress_callback=None
+        ):
+            raise TelegramThrottledError(32, caused_by="flood wait")
+
+    out = tmp_path / "out.mp4"
+    out.write_bytes(b"partial")  # parcial previo
+
+    task = TelegramDownloadTask(
+        message=FakeMessage(),
+        out_file=out,
+        provider=ThrottledProvider(FakeClient()),
+    )
+
+    with pytest.raises(TelegramThrottledError):
+        async for _ in task.progress():
+            pass
+        await task.finalize()
+
+    assert task.resume_fallback is False  # no reinicia desde cero
+    assert out.read_bytes() == b"partial"  # ni toca el parcial
