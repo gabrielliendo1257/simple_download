@@ -42,6 +42,16 @@ class DownloadManager:
     def find(self, job_id: UUID) -> DownloadJob | None:
         return self._jobs.get(job_id)
 
+    async def load(self) -> None:
+        """Sembra los jobs persistidos (catálogo) al arrancar la app."""
+        for job in await self._job_repository.list():
+            self._jobs[job.id] = job
+
+    async def remove(self, job_id: UUID) -> None:
+        """Descarta el job del catálogo (la UI lo usaba para descartar)."""
+        self._jobs.pop(job_id, None)
+        await self._job_repository.delete(job_id)
+
     async def enqueue(
         self,
         request: DownloadRequest,

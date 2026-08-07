@@ -123,9 +123,24 @@ class DownloadApp(App[None]):
 
         # Cursor fijo sin parpadeo (tmux/terminales no refrescan el blink)
         self.query_one("#url-input", Input).cursor_blink = False
+        await self._seed_jobs()
         self.query_one("#url-input", Input).focus()
         self._refresh_stats()
         self._toggle_empty()
+
+    async def _seed_jobs(self) -> None:
+        """Jobs del catálogo persistido (SQLite) visibles desde el arranque."""
+        if self._manager is None:
+            return
+        list_view = self.query_one("#download-list", ListView)
+        for job in self._manager.list():
+            key = str(job.id)
+            self._jobs[key] = job
+            self._items[key] = DownloadItem(self._to_ui(job), id=f"job-{job.id}")
+        for key, item in self._items.items():
+            await list_view.append(item)
+        if self._items and list_view.index is None:
+            list_view.index = 0
 
     async def on_exit(self) -> None:
         if self._scheduler is not None:
@@ -236,6 +251,8 @@ class DownloadApp(App[None]):
         if item is not None:
             await self.query_one("#download-list", ListView).remove_children([item])
         self._jobs.pop(key, None)
+        if self._manager is not None:
+            await self._manager.remove(job.id)
         self._toggle_empty()
         self._refresh_stats()
 

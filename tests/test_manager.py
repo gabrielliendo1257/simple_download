@@ -14,6 +14,7 @@ from simple_downloader.domain.event import (
     DownloadStateChangedEvent,
 )
 from simple_downloader.domain.models import (
+    DownloadJob,
     DownloadProgress,
     DownloadRequest,
     DownloadResult,
@@ -183,6 +184,40 @@ async def test_repository_persists_job_lifecycle() -> None:
     persisted = await repo.find(job.id)
     assert persisted is not None
     assert persisted.state is DownloadState.COMPLETED
+
+
+async def test_load_seeds_jobs_from_repository() -> None:
+    from simple_downloader.db import InMemoryRepository
+
+    repo = InMemoryRepository()
+    original = DownloadJob(
+        id=uuid4(),
+        request=DownloadRequest(url="https://x/viejo.mp4"),
+        state=DownloadState.PAUSED,
+    )
+    await repo.save(original)
+
+    manager, scheduler = _build_with_repo(repo)
+    await manager.load()
+
+    assert manager.find(original.id) is not None
+    assert manager.find(original.id).request.url == "https://x/viejo.mp4"  # type: ignore[union-attr]
+    assert len(manager.list()) == 1
+    await scheduler.finish()
+
+
+async def test_remove_deletes_from_repository() -> None:
+    from simple_downloader.db import InMemoryRepository
+
+    repo = InMemoryRepository()
+    manager, scheduler = _build_with_repo(repo)
+
+    job = await manager.enqueue(DownloadRequest(url="https://x/file.mp4"))
+    await manager.remove(job.id)
+
+    assert manager.find(job.id) is None
+    assert await repo.find(job.id) is None
+    await scheduler.finish()
 
 
 async def test_start_completes_job() -> None:

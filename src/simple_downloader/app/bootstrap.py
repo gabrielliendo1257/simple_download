@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from simple_downloader.app.manager import DownloadManager
 from simple_downloader.app.scheduler import DownloadScheduler
-from simple_downloader.db import InMemoryRepository
+from simple_downloader.db import SqliteRepository
 from simple_downloader.engines import EngineRegistry
 from simple_downloader.engines.hls import HlsEngine
 from simple_downloader.engines.http import HttpEngine
@@ -18,7 +18,7 @@ from simple_downloader.executor import (
     ExecutorDetector,
     ExecutorRegistry,
 )
-from simple_downloader.infra.config import UserConfig, load_user_config
+from simple_downloader.infra.config import UserConfig, catalog_db_path, load_user_config
 from simple_downloader.infra.http import AioHttpClient
 from simple_downloader.process import AsyncProcessExecutor
 from simple_downloader.sources import SourceProvider
@@ -70,7 +70,8 @@ async def build_backend() -> Backend:
     engine_registry.register(TelegramEngine(client_provider=telegram_provider))
     engine_registry.register(YtDlpEngine(source_provider=source_provider))
 
-    job_repository = InMemoryRepository()
+    # Catálogo persistente: los jobs sobreviven al cierre de la app.
+    job_repository = SqliteRepository(catalog_db_path())
 
     scheduler = DownloadScheduler(event_bus=bus, job_repository=job_repository)
     scheduler.start()
@@ -81,6 +82,7 @@ async def build_backend() -> Backend:
         download_scheduler=scheduler,
         job_repository=job_repository,
     )
+    await manager.load()
 
     return Backend(
         event_bus=bus,

@@ -8,6 +8,11 @@ _CONFIG_DIR = Path.home() / ".config" / "simple-downloader"
 _CONFIG_FILE = _CONFIG_DIR / "config.json"
 
 
+def catalog_db_path() -> Path:
+    """Path del catálogo de jobs (SQLite) en el directorio de config."""
+    return _CONFIG_DIR / "jobs.db"
+
+
 @dataclass(frozen=True)
 class TelegramConfig:
     """Credenciales del cliente de Telegram (Telethon, cuenta de usuario).
